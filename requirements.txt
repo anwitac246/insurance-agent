@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+langgraph
+langchain-groq
+langchain-core
+groq
+pinecone-client
+motor
+pydantic-settings
+python-dotenv
+pytesseract
+pdf2image
+Pillow
+python-multipart
