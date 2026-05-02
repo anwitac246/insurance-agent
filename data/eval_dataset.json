@@ -1,0 +1,1662 @@
+[
+    {
+        "claim_id": "EVAL-0055",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-513904\nName: Jessica Bowman\nVehicle: 51C L58\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0036",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-400267\nName: Michael Logan\nVehicle: G47-69Q\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0080",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-727102\nName: John Holmes\nVehicle: 738-PGE\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0004",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-952066\nName: Elijah Carpenter\nVehicle: 6-V7429\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0099",
+        "scenario_type": "edge",
+        "input": {
+            "extracted_text": "P0l!cy Numb3r: @#$\nN4me: J()hn D0e",
+            "images_present": false
+        },
+        "ground_truth": {
+            "decision": "escalate",
+            "is_fraud": false,
+            "policy_valid": false,
+            "missing_docs": [],
+            "missing_fields": [
+                "policy.policy_number"
+            ],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0059",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-243156\nName: Phillip Ferrell\nVehicle: 121 LYM\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0066",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-212213\nName: Jonathan Walsh\nVehicle: FHP 5176\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0081",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-240388\nName: Kristin Johnson\nVehicle: NED-371\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0009",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-25729\nName: Melissa Turner\nVehicle: 8AR97\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0022",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-486952\nName: Scott Cobb\nVehicle: 153TQ\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0091",
+        "scenario_type": "edge",
+        "input": {
+            "extracted_text": "P0l!cy Numb3r: @#$\nN4me: J()hn D0e",
+            "images_present": false
+        },
+        "ground_truth": {
+            "decision": "escalate",
+            "is_fraud": false,
+            "policy_valid": false,
+            "missing_docs": [],
+            "missing_fields": [
+                "policy.policy_number"
+            ],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0030",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-264902\nName: Bruce Cummings\nVehicle: 9G G1941\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0008",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-582037\nName: Ricky Nichols\nVehicle: 799 OHS\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0097",
+        "scenario_type": "edge",
+        "input": {
+            "extracted_text": "P0l!cy Numb3r: @#$\nN4me: J()hn D0e",
+            "images_present": false
+        },
+        "ground_truth": {
+            "decision": "escalate",
+            "is_fraud": false,
+            "policy_valid": false,
+            "missing_docs": [],
+            "missing_fields": [
+                "policy.policy_number"
+            ],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0031",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-442208\nName: Christina Valdez\nVehicle: QUD5498\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0100",
+        "scenario_type": "edge",
+        "input": {
+            "extracted_text": "P0l!cy Numb3r: @#$\nN4me: J()hn D0e",
+            "images_present": false
+        },
+        "ground_truth": {
+            "decision": "escalate",
+            "is_fraud": false,
+            "policy_valid": false,
+            "missing_docs": [],
+            "missing_fields": [
+                "policy.policy_number"
+            ],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0071",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-903899\nName: Dustin Mendoza\nVehicle: 373-JDY\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0074",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-685601\nName: Christopher Hill\nVehicle: 8-93830\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0016",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-669833\nName: Laura Richardson\nVehicle: 4OE 546\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0098",
+        "scenario_type": "edge",
+        "input": {
+            "extracted_text": "P0l!cy Numb3r: @#$\nN4me: J()hn D0e",
+            "images_present": false
+        },
+        "ground_truth": {
+            "decision": "escalate",
+            "is_fraud": false,
+            "policy_valid": false,
+            "missing_docs": [],
+            "missing_fields": [
+                "policy.policy_number"
+            ],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0047",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-65810\nName: Jessica Shaw\nVehicle: IUA 736\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0020",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-259387\nName: Kathy Horton\nVehicle: AQD 8381\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0067",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-917763\nName: Marilyn Morales\nVehicle: 0A 1K9MCY\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0042",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-481744\nName: Kimberly Nguyen\nVehicle: 23Q VQ6\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0069",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-634189\nName: Andrew Neal II\nVehicle: 2049\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0089",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-264094\nName: Kristin Martinez\nVehicle: 44-6709T\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0068",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-380591\nName: Gary Brown\nVehicle: 44Y-ANFA\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0043",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-876829\nName: Erica King\nVehicle: 8H JE236\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0033",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-543156\nName: Tracy Weber\nVehicle: 4-E9983\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0027",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-677520\nName: Michael Vega\nVehicle: 7F ZM152\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0056",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-495163\nName: Catherine Thomas MD\nVehicle: 6PQ Y08\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0087",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-16772\nName: Chad Huber\nVehicle: PTE-805\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0012",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-490835\nName: Steven Hardy\nVehicle: 0FQ 331\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0001",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-932315\nName: Carrie Cruz\nVehicle: 874-LZA\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0062",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-455608\nName: Robert Flores\nVehicle: QEI4436\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0060",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-874671\nName: Andrew Hudson\nVehicle: BZS 367\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0064",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-897861\nName: Jordan Ryan\nVehicle: LQA-5397\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0052",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-989138\nName: Blake Lewis\nVehicle: LJM-3528\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0045",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-688384\nName: David Ford\nVehicle: 4DK 886\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0085",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-165275\nName: David Tucker\nVehicle: 699 OQO\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0007",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-390767\nName: Christy Tran\nVehicle: 166503\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0017",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-690686\nName: Rebecca Barnes\nVehicle: MCU 219\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0037",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-828923\nName: Miss Adriana Collins DDS\nVehicle: KEX 693\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0057",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-830621\nName: Luis Beltran\nVehicle: 0XBI 48\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0048",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-95710\nName: James Jackson\nVehicle: Y07-37Q\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0046",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-592723\nName: Erin Carlson\nVehicle: 2F 2Q9ROV\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0082",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-828992\nName: Teresa Smith\nVehicle: 190-WDK\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0070",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-418025\nName: David Franklin\nVehicle: VJW 284\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0038",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-64143\nName: Ashley Salazar\nVehicle: 4TX 595\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0076",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-810794\nName: Sara Clark\nVehicle: 00O\u2022863\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0025",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-934251\nName: Mariah Roman\nVehicle: 589-QVG\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0079",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-378586\nName: Tiffany Tucker MD\nVehicle: LDI 181\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0019",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-97280\nName: Kimberly Roman\nVehicle: 569 ZZM\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0092",
+        "scenario_type": "edge",
+        "input": {
+            "extracted_text": "P0l!cy Numb3r: @#$\nN4me: J()hn D0e",
+            "images_present": false
+        },
+        "ground_truth": {
+            "decision": "escalate",
+            "is_fraud": false,
+            "policy_valid": false,
+            "missing_docs": [],
+            "missing_fields": [
+                "policy.policy_number"
+            ],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0010",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-434020\nName: Daniel Todd\nVehicle: 019-YFZ\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0039",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-928732\nName: Bryan Tran\nVehicle: 8767\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0096",
+        "scenario_type": "edge",
+        "input": {
+            "extracted_text": "P0l!cy Numb3r: @#$\nN4me: J()hn D0e",
+            "images_present": false
+        },
+        "ground_truth": {
+            "decision": "escalate",
+            "is_fraud": false,
+            "policy_valid": false,
+            "missing_docs": [],
+            "missing_fields": [
+                "policy.policy_number"
+            ],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0054",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-114421\nName: Stacey Middleton\nVehicle: 609 BRI\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0049",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-614860\nName: Chad Hunt\nVehicle: O53-94C\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0075",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-817814\nName: Kimberly Davidson\nVehicle: 4-81294Y\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0005",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-933724\nName: Andrew Myers\nVehicle: Q 397424\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0044",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-256356\nName: Leslie Ray\nVehicle: 6RH7173\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0041",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-86473\nName: Sylvia King\nVehicle: 8M 45607\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0058",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-92513\nName: Roger Dodson\nVehicle: KOB-3309\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0011",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-733556\nName: Krystal Ruiz\nVehicle: UBT 095\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0023",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-516429\nName: John York\nVehicle: LXJ 832\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0073",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-655697\nName: Carlos Wyatt\nVehicle: 894 3BX\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0053",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-488381\nName: Jody Delgado\nVehicle: C 419641\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0028",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-885375\nName: Tanya Miller\nVehicle: SL8 V9R\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0093",
+        "scenario_type": "edge",
+        "input": {
+            "extracted_text": "P0l!cy Numb3r: @#$\nN4me: J()hn D0e",
+            "images_present": false
+        },
+        "ground_truth": {
+            "decision": "escalate",
+            "is_fraud": false,
+            "policy_valid": false,
+            "missing_docs": [],
+            "missing_fields": [
+                "policy.policy_number"
+            ],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0090",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-598360\nName: Jeffrey Huber\nVehicle: 712QYK\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0035",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-872705\nName: Russell Rodriguez\nVehicle: JDQ-344\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0095",
+        "scenario_type": "edge",
+        "input": {
+            "extracted_text": "P0l!cy Numb3r: @#$\nN4me: J()hn D0e",
+            "images_present": false
+        },
+        "ground_truth": {
+            "decision": "escalate",
+            "is_fraud": false,
+            "policy_valid": false,
+            "missing_docs": [],
+            "missing_fields": [
+                "policy.policy_number"
+            ],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0050",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-86920\nName: Charles Becker\nVehicle: YMA O85\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0014",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-284750\nName: Jessica Rodriguez\nVehicle: 0-44334\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0065",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-334353\nName: Judy White\nVehicle: HZG-504\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0051",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-626905\nName: Michael Wright\nVehicle: LRW-891\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0018",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-618418\nName: Dean Harper\nVehicle: S 104362\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0088",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-983192\nName: Jodi Olsen\nVehicle: 278 6772\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0061",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-84134\nName: Donald Newman\nVehicle: K 377485\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0084",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-905574\nName: Gary Villa\nVehicle: 1QN5269\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0077",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-864724\nName: Robert Velasquez\nVehicle: 8C562\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0063",
+        "scenario_type": "fraud",
+        "input": {
+            "extracted_text": "Policy Number: POL-855058\nName: William Haley\nVehicle: 191 YNO\nDate: 2023-10-01\nFIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "reject",
+            "is_fraud": true,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0006",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-369208\nName: Jacob Graham\nVehicle: PHM-5482\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0072",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-731787\nName: Timothy King\nVehicle: 8FT Y15\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0078",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-479228\nName: Mark Jacobs\nVehicle: FBK-2791\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0029",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-564772\nName: Thomas Schultz\nVehicle: 0GW 663\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0015",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-41470\nName: Kaitlin Hays\nVehicle: 899-GQV\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0032",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-278843\nName: Ashlee Jackson\nVehicle: 493 9BN\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0002",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-43840\nName: Cynthia White\nVehicle: QU 4595\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0003",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-988186\nName: Jacob Walker\nVehicle: 2-96941R\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0026",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-212934\nName: Jeffrey Holt\nVehicle: 2-Y4704\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0086",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-811927\nName: Joel Webb\nVehicle: 17E 3480\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0013",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-59576\nName: George Lang\nVehicle: Y26-QYB\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0094",
+        "scenario_type": "edge",
+        "input": {
+            "extracted_text": "P0l!cy Numb3r: @#$\nN4me: J()hn D0e",
+            "images_present": false
+        },
+        "ground_truth": {
+            "decision": "escalate",
+            "is_fraud": false,
+            "policy_valid": false,
+            "missing_docs": [],
+            "missing_fields": [
+                "policy.policy_number"
+            ],
+            "expected_payout": 0.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0034",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-946165\nName: James Price\nVehicle: IWW 997\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0040",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-787358\nName: Rachel Torres\nVehicle: 562 CYD\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0021",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-364231\nName: Nicole Ware\nVehicle: 903-XWF\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0024",
+        "scenario_type": "valid",
+        "input": {
+            "extracted_text": "Policy Number: POL-776432\nName: Terrance Martin\nVehicle: GAT 611\nDate: 2023-10-01\nFIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "approve",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [],
+            "missing_fields": [],
+            "expected_payout": 1500.0
+        }
+    },
+    {
+        "claim_id": "EVAL-0083",
+        "scenario_type": "missing",
+        "input": {
+            "extracted_text": "Policy Number: POL-380276\nName: Austin Barnett\nVehicle: 7VZ7799\nDate: 2023-10-01\nFIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999",
+            "images_present": true
+        },
+        "ground_truth": {
+            "decision": "pending_docs",
+            "is_fraud": false,
+            "policy_valid": true,
+            "missing_docs": [
+                "Repair Estimate"
+            ],
+            "missing_fields": [],
+            "expected_payout": 0.0
+        }
+    }
+]
