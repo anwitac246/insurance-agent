@@ -16,3 +16,4 @@ sentence-transformers
 langchain-huggingface
 langchain-community
 langchain-pinecone
+faker
