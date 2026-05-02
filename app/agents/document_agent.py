@@ -11,7 +11,7 @@ from PIL import Image
 
 # Initialize Groq LLMs
 vision_llm = ChatGroq(model="llama-3.2-11b-vision-preview", api_key=settings.GROQ_API_KEY)
-text_llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=settings.GROQ_API_KEY)
+text_llm = ChatGroq(model="llama-3.1-8b-instant", api_key=settings.GROQ_API_KEY)
 
 # Use structured output
 structured_llm = text_llm.with_structured_output(ExtractedClaimData)
@@ -119,7 +119,8 @@ def process_documents(state: ClaimState) -> ClaimState:
     
     try:
         extracted_data_obj = structured_llm.invoke(prompt)
-    except Exception:
+    except Exception as e:
+        print(f"Error during LLM extraction: {repr(e)}")
         extracted_data_obj = None
         
     state["extracted_data"] = extracted_data_obj.model_dump() if extracted_data_obj else {}

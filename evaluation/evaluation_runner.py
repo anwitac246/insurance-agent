@@ -48,8 +48,11 @@ async def run_pipeline(input_data: dict, add_noise=False) -> tuple:
     # 1. Document Agent (Mocked extraction step to save file I/O latency)
     prompt = f"Analyze extracted claim text.\nExtracted Text: {extracted_text}\nDamage Summary: "
     try:
+        import asyncio
+        await asyncio.sleep(2) # Prevent Groq Rate limit
         extracted_data_obj = await structured_llm.ainvoke(prompt)
-    except Exception:
+    except Exception as e:
+        print(f"Error during LLM extraction: {repr(e)}")
         extracted_data_obj = None
         
     state["extracted_data"] = extracted_data_obj.model_dump() if extracted_data_obj else {}

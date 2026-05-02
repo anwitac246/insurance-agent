@@ -1,11 +1,39 @@
 import json
 import random
 import os
+import asyncio
 from faker import Faker
+from motor.motor_asyncio import AsyncIOMotorClient
+
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from app.core.config import settings
 
 fake = Faker()
 
-def generate_dataset(num_samples=100, output_path="data/eval_dataset.json"):
+async def fetch_real_data_from_db(limit=200):
+    client = AsyncIOMotorClient(settings.MONGODB_URI)
+    db = client[settings.DATABASE_NAME]
+    
+    policies_cursor = db.policies.aggregate([
+        {"$lookup": {"from": "policyholders", "localField": "policyholder_id", "foreignField": "policyholder_id", "as": "user"}},
+        {"$lookup": {"from": "vehicles", "localField": "vehicle_id", "foreignField": "vehicle_id", "as": "vehicle"}},
+        {"$match": {"user": {"$ne": []}, "vehicle": {"$ne": []}}},
+        {"$limit": limit}
+    ])
+    
+    real_data = []
+    async for p in policies_cursor:
+        real_data.append({
+            "policy_num": p["policy_number"],
+            "veh_num": p["vehicle"][0]["vehicle_number"],
+            "user_name": p["user"][0]["name"]
+        })
+        
+    client.close()
+    return real_data
+
+async def generate_dataset(num_samples=100, output_path="data/eval_dataset.json"):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     dataset = []
     
@@ -21,12 +49,27 @@ def generate_dataset(num_samples=100, output_path="data/eval_dataset.json"):
 
     claim_id_counter = 1
     
+    # Fetch real linked data from MongoDB
+    print("Fetching real entities from MongoDB...")
+    real_data_pool = await fetch_real_data_from_db(limit=num_samples + 50)
+    if not real_data_pool:
+         print("Warning: MongoDB is empty! Please run generate_synthetic_db.py first. Falling back to random faker data.")
+         # Fallback pool
+         real_data_pool = [{"policy_num": f"POL-{fake.unique.random_number(digits=6)}", "veh_num": fake.license_plate(), "user_name": fake.name()} for _ in range(num_samples)]
+         
+    random.shuffle(real_data_pool)
+    
     for scenario, count in counts.items():
         for _ in range(count):
+            if not real_data_pool:
+                break
+                
+            db_item = real_data_pool.pop()
+            
             claim_id = f"EVAL-{claim_id_counter:04d}"
-            policy_num = f"POL-{fake.unique.random_number(digits=6)}"
-            veh_num = fake.license_plate()
-            user_name = fake.name()
+            policy_num = db_item["policy_num"]
+            veh_num = db_item["veh_num"]
+            user_name = db_item["user_name"]
             
             case = {
                 "claim_id": claim_id,
@@ -139,7 +182,7 @@ Police Station: Central Precinct""", "")
                 case["input"]["extracted_text"] = corrupted
                 case["input"]["images_present"] = False
                 case["ground_truth"]["decision"] = "escalate"
-                case["ground_truth"]["policy_valid"] = False
+                case["ground_truth"]["policy_valid"] = False # Edge case corrupts policy number
                 case["ground_truth"]["missing_fields"] = ["policy.policy_number"]
             
             dataset.append(case)
@@ -153,4 +196,4 @@ Police Station: Central Precinct""", "")
     print(f"Generated {len(dataset)} evaluation cases at {output_path}")
 
 if __name__ == "__main__":
-    generate_dataset(100)
+    asyncio.run(generate_dataset(100))

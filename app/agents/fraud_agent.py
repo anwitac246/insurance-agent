@@ -12,7 +12,7 @@ class FraudAnalysisOutput(BaseModel):
     fraud_flags: List[str] = Field(default_factory=list, description="List of specific fraud indicators found")
     requires_manual_review: bool = Field(..., description="True if risk is high or significant discrepancies exist")
 
-text_llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=settings.GROQ_API_KEY)
+text_llm = ChatGroq(model="llama-3.1-8b-instant", api_key=settings.GROQ_API_KEY)
 structured_llm = text_llm.with_structured_output(FraudAnalysisOutput)
 
 async def detect_fraud(state: ClaimState) -> ClaimState:
