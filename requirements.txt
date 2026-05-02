@@ -17,3 +17,5 @@ langchain-huggingface
 langchain-community
 langchain-pinecone
 faker
+scikit-learn
+pandas
