@@ -15,7 +15,7 @@ class FraudAnalysisOutput(BaseModel):
 text_llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=settings.GROQ_API_KEY)
 structured_llm = text_llm.with_structured_output(FraudAnalysisOutput)
 
-def detect_fraud(state: ClaimState) -> ClaimState:
+async def detect_fraud(state: ClaimState) -> ClaimState:
     extracted = state.get("extracted_data", {})
     policy_veri = state.get("policy_verification", {})
     
@@ -38,7 +38,7 @@ def detect_fraud(state: ClaimState) -> ClaimState:
         return policy, past_claims, signals
         
     try:
-        policy, past_claims, signals = asyncio.run(fetch_db_context())
+        policy, past_claims, signals = await fetch_db_context()
         
         # Build synthesis prompt for the LLM
         prompt = f"""

@@ -9,7 +9,6 @@ def generate_dataset(num_samples=100, output_path="data/eval_dataset.json"):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     dataset = []
     
-    # 40% Valid, 30% Fraud, 20% Missing, 10% Edge Cases
     counts = {
         "valid": int(num_samples * 0.40),
         "fraud": int(num_samples * 0.30),
@@ -17,7 +16,6 @@ def generate_dataset(num_samples=100, output_path="data/eval_dataset.json"):
         "edge": int(num_samples * 0.10)
     }
     
-    # Fix rounding if it doesn't sum to exactly num_samples
     while sum(counts.values()) < num_samples:
         counts["valid"] += 1
 
@@ -47,27 +45,98 @@ def generate_dataset(num_samples=100, output_path="data/eval_dataset.json"):
                 }
             }
             
-            base_text = f"Policy Number: {policy_num}\nName: {user_name}\nVehicle: {veh_num}\nDate: 2023-10-01\n"
+            fir_num = fake.random_number(digits=5)
+            # Master template containing all 8 documents explicitly formatted
+            base_text = f"""
+=== INSURANCE POLICY ===
+Policy Number: {policy_num}
+Policyholder Name: {user_name}
+Start Date: 2022-01-01
+End Date: 2025-01-01
+Type: Comprehensive
+IDV: 15000.0
+Vehicle Number: {veh_num}
+Coverage: Full Collision
+Add-ons: Zero Depreciation
+
+=== CLAIM FORM ===
+Claim ID: {claim_id}
+Policy Number: {policy_num}
+Claimant Name: {user_name}
+Incident Date: 2023-10-01
+Incident Time: 14:30
+Description: Rear-ended at a stoplight.
+Location: Main St Intersection
+Signature Present: True
+
+=== VEHICLE RC ===
+Vehicle Number: {veh_num}
+Owner Name: {user_name}
+Registration Date: 2020-05-10
+Chassis Number: VIN-{fake.random_number(digits=8)}
+Engine Number: ENG-{fake.random_number(digits=8)}
+Make Model: Toyota Corolla
+
+=== DRIVING LICENSE ===
+Driver Name: {user_name}
+License Number: DL-{fake.random_number(digits=8)}
+Issue Date: 2018-01-01
+Expiry Date: 2028-01-01
+Class: LMV
+
+=== FIR DOCUMENT ===
+FIR Number: FIR-{fir_num}
+FIR Date: 2023-10-02
+Description: Two-car collision.
+Police Station: Central Precinct
+
+=== DAMAGE IMAGES ===
+Damage Summary: Heavy rear bumper damage.
+Regions: Rear Bumper, Trunk
+Severity: High
+Quality Score: 0.9
+Is Blurry: False
+
+=== REPAIR ESTIMATE ===
+Garage Name: Joe's Auto
+Estimated Amount: 2500.0
+Damage Details: Bumper replacement and trunk realignment.
+Invoice Number: INV-999
+
+=== IDENTITY PROOF ===
+Name: {user_name}
+ID Number: PASS-{fake.random_number(digits=6)}
+Address: 123 Main St, Anytown
+"""
             
             if scenario == "valid":
-                case["input"]["extracted_text"] = base_text + "FIR Number: FIR-123\nRepair Estimate: $1500\nSignature: YES\nIdentity: PASSPORT-999"
+                case["input"]["extracted_text"] = base_text
                 case["ground_truth"]["decision"] = "approve"
-                case["ground_truth"]["expected_payout"] = 1500.0
+                case["ground_truth"]["expected_payout"] = 2500.0
                 
             elif scenario == "fraud":
-                case["input"]["extracted_text"] = base_text + "FIR Number: FIR-FAKE\nRepair Estimate: $8500\nSignature: YES\nIdentity: PASSPORT-999"
+                # Inject a mismatch to trigger fraud
+                fraud_text = base_text.replace(f"Vehicle Number: {veh_num}", "Vehicle Number: FAKE-999")
+                fraud_text = fraud_text.replace("Estimated Amount: 2500.0", "Estimated Amount: 15000.0")
+                case["input"]["extracted_text"] = fraud_text
                 case["ground_truth"]["decision"] = "reject"
                 case["ground_truth"]["is_fraud"] = True
                 
             elif scenario == "missing":
-                # Miss the repair estimate
-                case["input"]["extracted_text"] = base_text + "FIR Number: FIR-123\nSignature: YES\nIdentity: PASSPORT-999"
+                # Remove the entire FIR section
+                missing_text = base_text.replace(f"""=== FIR DOCUMENT ===
+FIR Number: FIR-{fir_num}
+FIR Date: 2023-10-02
+Description: Two-car collision.
+Police Station: Central Precinct""", "")
+                case["input"]["extracted_text"] = missing_text
                 case["ground_truth"]["decision"] = "pending_docs"
-                case["ground_truth"]["missing_docs"] = ["Repair Estimate"]
+                case["ground_truth"]["missing_docs"] = ["FIRDocument"]
                 
             elif scenario == "edge":
-                # e.g., expired policy or extremely blurry OCR
-                case["input"]["extracted_text"] = "P0l!cy Numb3r: @#$\nN4me: J()hn D0e" # OCR noise
+                # Corrupt the text
+                corrupted = base_text.replace("0", "O").replace("1", "I").replace("e", "3")
+                case["input"]["extracted_text"] = corrupted
                 case["input"]["images_present"] = False
                 case["ground_truth"]["decision"] = "escalate"
                 case["ground_truth"]["policy_valid"] = False
@@ -76,7 +145,6 @@ def generate_dataset(num_samples=100, output_path="data/eval_dataset.json"):
             dataset.append(case)
             claim_id_counter += 1
             
-    # Shuffle dataset
     random.shuffle(dataset)
             
     with open(output_path, "w", encoding="utf-8") as f:

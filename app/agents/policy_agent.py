@@ -3,7 +3,7 @@ from app.services.db_queries import get_policy_by_number, get_policyholder_by_id
 import asyncio
 from datetime import datetime
 
-def verify_policy(state: ClaimState) -> ClaimState:
+async def verify_policy(state: ClaimState) -> ClaimState:
     extracted = state.get("extracted_data", {})
     policy_doc = extracted.get("insurance_policy", {})
     claim_form = extracted.get("claim_form", {})
@@ -21,7 +21,7 @@ def verify_policy(state: ClaimState) -> ClaimState:
         return policy, user, vehicle
         
     try:
-        policy, user, vehicle = asyncio.run(run_queries())
+        policy, user, vehicle = await run_queries()
         
         if not policy:
             state["policy_verification"] = {

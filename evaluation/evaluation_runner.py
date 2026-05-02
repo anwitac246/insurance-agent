@@ -19,10 +19,12 @@ except ImportError:
 from evaluation.agent_metrics import calculate_fraud_metrics, calculate_policy_metrics, calculate_document_metrics
 from evaluation.system_metrics import calculate_system_metrics
 from evaluation.robustness_tests import add_ocr_noise
+from dotenv import load_dotenv
+load_dotenv()
 
-def run_pipeline(input_data: dict, add_noise=False) -> tuple:
+async def run_pipeline(input_data: dict, add_noise=False) -> tuple:
     """
-    Simulates the LangGraph pipeline synchronously for testing.
+    Simulates the LangGraph pipeline asynchronously for testing.
     Returns (final_state, latency)
     """
     start_time = time.time()
@@ -46,7 +48,7 @@ def run_pipeline(input_data: dict, add_noise=False) -> tuple:
     # 1. Document Agent (Mocked extraction step to save file I/O latency)
     prompt = f"Analyze extracted claim text.\nExtracted Text: {extracted_text}\nDamage Summary: "
     try:
-        extracted_data_obj = structured_llm.invoke(prompt)
+        extracted_data_obj = await structured_llm.ainvoke(prompt)
     except Exception:
         extracted_data_obj = None
         
@@ -59,13 +61,13 @@ def run_pipeline(input_data: dict, add_noise=False) -> tuple:
          return state, time.time() - start_time
          
     # 2. Policy Agent
-    state = verify_policy(state)
+    state = await verify_policy(state)
     if not state.get("policy_verification", {}).get("policy_valid"):
         state["status"] = "rejected"
         return state, time.time() - start_time
         
     # 3. Fraud Agent
-    state = detect_fraud(state)
+    state = await detect_fraud(state)
     
     # 4. Decision Agent (Fallback if module missing)
     if make_decision:
@@ -84,7 +86,7 @@ def run_pipeline(input_data: dict, add_noise=False) -> tuple:
     latency = time.time() - start_time
     return state, latency
 
-def run_evaluation(dataset_path="data/eval_dataset.json"):
+async def run_evaluation(dataset_path="data/eval_dataset.json"):
     if not os.path.exists(dataset_path):
         print(f"Dataset {dataset_path} not found. Please run generation script.")
         return
@@ -94,11 +96,14 @@ def run_evaluation(dataset_path="data/eval_dataset.json"):
         
     results = []
     
+    # Run only a small sample to save Groq API tokens and time
+    dataset = dataset[:10] 
+    
     for case in dataset:
         print(f"Evaluating Case {case['claim_id']} ({case['scenario_type']})...")
         
         # Clean run
-        state, latency = run_pipeline(case["input"], add_noise=False)
+        state, latency = await run_pipeline(case["input"], add_noise=False)
         
         # Determine predicted decision
         if state["status"] == "pending_docs":
@@ -152,6 +157,5 @@ def run_evaluation(dataset_path="data/eval_dataset.json"):
     print(json.dumps(report, indent=4))
 
 if __name__ == "__main__":
-    # For testing speed, evaluating on just 5 cases if dataset is massive
-    # Or just run full
-    run_evaluation()
+    import asyncio
+    asyncio.run(run_evaluation())
