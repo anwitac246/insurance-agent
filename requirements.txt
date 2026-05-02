@@ -12,3 +12,7 @@ pytesseract
 pdf2image
 Pillow
 python-multipart
+sentence-transformers
+langchain-huggingface
+langchain-community
+langchain-pinecone
