@@ -4,13 +4,13 @@ import asyncio
 from langchain_groq import ChatGroq
 from app.core.config import settings
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 
 class FraudAnalysisOutput(BaseModel):
     fraud_risk_score: float = Field(..., description="A score from 0.0 (no risk) to 1.0 (high risk)")
-    fraud_flags: List[str] = Field(default_factory=list, description="List of specific fraud indicators found")
-    requires_manual_review: bool = Field(..., description="True if risk is high or significant discrepancies exist")
+    fraud_flags: Optional[List[str]] = Field(default_factory=list, description="List of specific fraud indicators found")
+    requires_manual_review: Optional[bool] = Field(None, description="True if risk is high or significant discrepancies exist")
 
 text_llm = ChatGroq(model="llama-3.1-8b-instant", api_key=settings.GROQ_API_KEY)
 structured_llm = text_llm.with_structured_output(FraudAnalysisOutput)
@@ -56,8 +56,9 @@ async def detect_fraud(state: ClaimState) -> ClaimState:
         - Are there mismatches in policy verification (e.g. wrong user, wrong vehicle)?
         - Does the vehicle have high claim frequency?
         - Are there known fraud signals?
+        - IMPORTANT: Look at the repair_estimate amount and damage_images severity. If the amount is abnormally high (>50000) for "Rear Bumper" or "Minor" damage, FLAG IT AS FRAUD!
         
-        If there are any mismatches or fraud signals, the score should be > 0.5 and requires_manual_review should be true.
+        If there are any mismatches, absurd repair estimates, or fraud signals, the score should be > 0.5 and requires_manual_review should be true.
         """
         
         res = structured_llm.invoke(prompt)
