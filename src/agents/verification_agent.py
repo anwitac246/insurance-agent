@@ -1,36 +1,30 @@
 """
 verification_agent.py
 ---------------------
-Document verification agent.
-
-Migrated from ChatAnthropic (claude-3-5-haiku) → ChatGroq (llama-3.3-70b-versatile).
-No Anthropic API key is required anywhere in this project.
-
-Responsibilities
-----------------
-  1. Fetch the Active_Claim record from MongoDB.
-  2. Parse the OCR extraction dict into a validated OcrExtraction Pydantic model.
-  3. Cross-check ClaimantName and PolicyNumber against the Customer_Profiles collection.
-  4. Populate state with raw_data, verification_output, and sanitized_data.
+Document verification agent with Groq key rotation support.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from functools import lru_cache
 from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
 
+from src.tools.groq_client import get_llm, record_429, record_success
 from src.tools.mongo_client import get_db
 
 logger = logging.getLogger(__name__)
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
 LLM_MAX_RETRIES = 3
 
 
@@ -51,12 +45,7 @@ class VerificationOutput(BaseModel):
     discrepancies: list[str]
 
 
-# ── LLM singleton ──────────────────────────────────────────────────────────────
-
-@lru_cache(maxsize=1)
-def _get_llm() -> ChatGroq:
-    return ChatGroq(model=GROQ_MODEL, temperature=0, request_timeout=30)
-
+# ── Prompt ─────────────────────────────────────────────────────────────────────
 
 _prompt = ChatPromptTemplate.from_messages([
     (
@@ -76,14 +65,31 @@ _prompt = ChatPromptTemplate.from_messages([
 ])
 
 
-@retry(
-    retry=retry_if_exception_type(Exception),
-    stop=stop_after_attempt(LLM_MAX_RETRIES),
-    wait=wait_exponential(min=2, max=10),
-    reraise=True,
-)
-def _invoke_ocr(chain, inputs: dict) -> OcrExtraction:
-    return chain.invoke(inputs)
+# ── Retry-wrapped LLM call ─────────────────────────────────────────────────────
+
+def _invoke_ocr(inputs: dict) -> OcrExtraction:
+    """Invoke OCR parsing with 429-aware key rotation and tenacity retry."""
+    last_exc = None
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            llm = get_llm()
+            chain = _prompt | llm.with_structured_output(OcrExtraction)
+            result = chain.invoke(inputs)
+            record_success()
+            return result
+        except Exception as exc:
+            last_exc = exc
+            exc_str = str(exc).lower()
+            if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
+                logger.warning("verification_agent | 429 detected (attempt %d)", attempt + 1)
+                record_429()
+                # brief pause before retry — the manager may have already rotated the key
+                time.sleep(2 ** attempt)
+            else:
+                logger.warning("verification_agent | LLM error (attempt %d): %s", attempt + 1, exc)
+                time.sleep(2 ** attempt)
+
+    raise last_exc
 
 
 # ── Main agent function ────────────────────────────────────────────────────────
@@ -106,9 +112,8 @@ def run_verification_agent(state: dict) -> dict:
 
     # ── OCR parsing ────────────────────────────────────────────────────────────
     ocr_raw = claim.get("ocr_extraction", {})
-    chain = _prompt | _get_llm().with_structured_output(OcrExtraction)
     try:
-        parsed_ocr: OcrExtraction = _invoke_ocr(chain, {"ocr_json": str(ocr_raw)})
+        parsed_ocr: OcrExtraction = _invoke_ocr({"ocr_json": str(ocr_raw)})
     except Exception as exc:
         logger.exception("OCR parsing failed for claim %s", claim_id)
         return {
@@ -159,8 +164,6 @@ def run_verification_agent(state: dict) -> dict:
         discrepancies=discrepancies,
     )
 
-    # ── Build sanitized_data for downstream agents ─────────────────────────────
-    # This centralised dict is the single source of truth for all agents.
     sanitized_data = {
         "claim_id": claim_id,
         "customer_id": claim.get("customer_id", ""),

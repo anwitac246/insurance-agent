@@ -1,61 +1,27 @@
 """
 llm_judge.py
 ------------
-LLM-as-Judge utilities powered exclusively by Groq (llama-3.3-70b-versatile).
-No Anthropic API key is required anywhere in this module.
-
-Two judges:
-  1. GroundednessJudge  — scores PolicyVerdict against retrieved policy text (1-5)
-  2. HallucinationJudge — classifies individual reasoning steps as supported / unsupported
-
-Both judges use structured outputs (Pydantic) so results can be parsed
-deterministically downstream.
+LLM-as-Judge utilities using the centralized Groq key rotation manager.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import time
 from enum import Enum
-from functools import lru_cache
 from typing import Optional
 
-from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-load_dotenv()
+from src.tools.groq_client import get_llm, record_429, record_success
+
 logger = logging.getLogger(__name__)
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
 MAX_RETRIES = 3
 
 
-# ── Lazy singleton ─────────────────────────────────────────────────────────────
-@lru_cache(maxsize=1)
-def _get_llm() -> ChatGroq:
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise EnvironmentError("GROQ_API_KEY is not set in the environment or .env file.")
-    return ChatGroq(model=GROQ_MODEL, temperature=0, request_timeout=45)
-
-
-# ── Retry decorator ────────────────────────────────────────────────────────────
-def _retry():
-    return retry(
-        retry=retry_if_exception_type(Exception),
-        stop=stop_after_attempt(MAX_RETRIES),
-        wait=wait_exponential(min=2, max=10),
-        reraise=True,
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. Groundedness Judge
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Groundedness Judge ─────────────────────────────────────────────────────────
 
 class GroundednessScore(BaseModel):
     score: int = Field(ge=1, le=5, description="1=completely unsupported → 5=fully grounded")
@@ -91,12 +57,27 @@ _GROUNDEDNESS_PROMPT = ChatPromptTemplate.from_messages([
 
 
 class GroundednessJudge:
-    """Score how well a PolicyVerdict is supported by retrieved policy text."""
+    def _invoke(self, inputs: dict) -> GroundednessScore:
+        last_exc = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                llm = get_llm()
+                chain = _GROUNDEDNESS_PROMPT | llm.with_structured_output(GroundednessScore)
+                result = chain.invoke(inputs)
+                record_success()
+                return result
+            except Exception as exc:
+                last_exc = exc
+                exc_str = str(exc).lower()
+                if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
+                    logger.warning("groundedness_judge | 429 (attempt %d)", attempt + 1)
+                    record_429()
+                    time.sleep(2 ** attempt)
+                else:
+                    logger.warning("groundedness_judge | error (attempt %d): %s", attempt + 1, exc)
+                    time.sleep(2 ** attempt)
+        raise last_exc
 
-    def __init__(self):
-        self._chain = _GROUNDEDNESS_PROMPT | _get_llm().with_structured_output(GroundednessScore)
-
-    @_retry()
     def score(self, policy_text: str, verdict: dict) -> GroundednessScore:
         verdict_text = (
             f"incident_covered={verdict.get('incident_covered')}, "
@@ -104,15 +85,13 @@ class GroundednessJudge:
             f"exclusion_reason={verdict.get('exclusion_reason', '')!r}, "
             f"reasoning={verdict.get('coverage_reasoning', '')}"
         )
-        return self._chain.invoke({
-            "policy_text": policy_text[:3000],  # guard against context overflow
+        return self._invoke({
+            "policy_text": policy_text[:3000],
             "verdict_text": verdict_text,
         })
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. Hallucination Judge
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Hallucination Judge ────────────────────────────────────────────────────────
 
 class SupportLabel(str, Enum):
     SUPPORTED = "supported"
@@ -153,16 +132,28 @@ _HALLUCINATION_PROMPT = ChatPromptTemplate.from_messages([
 
 
 class HallucinationJudge:
-    """Classify each reasoning step as supported, unsupported, or uncertain."""
+    def _invoke(self, inputs: dict) -> HallucinationReport:
+        last_exc = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                llm = get_llm()
+                chain = _HALLUCINATION_PROMPT | llm.with_structured_output(HallucinationReport)
+                result = chain.invoke(inputs)
+                record_success()
+                return result
+            except Exception as exc:
+                last_exc = exc
+                exc_str = str(exc).lower()
+                if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
+                    logger.warning("hallucination_judge | 429 (attempt %d)", attempt + 1)
+                    record_429()
+                    time.sleep(2 ** attempt)
+                else:
+                    logger.warning("hallucination_judge | error (attempt %d): %s", attempt + 1, exc)
+                    time.sleep(2 ** attempt)
+        raise last_exc
 
-    def __init__(self):
-        self._chain = _HALLUCINATION_PROMPT | _get_llm().with_structured_output(
-            HallucinationReport
-        )
-
-    @_retry()
     def evaluate(self, facts: str, reasoning: str) -> HallucinationReport:
-        # Split reasoning into individual steps by sentence / newline
         raw_steps = [
             s.strip()
             for s in reasoning.replace("\n", ". ").split(".")
@@ -170,7 +161,7 @@ class HallucinationJudge:
         ]
         steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(raw_steps))
 
-        return self._chain.invoke({
+        return self._invoke({
             "facts": facts[:2000],
             "steps": steps_text[:2000],
         })

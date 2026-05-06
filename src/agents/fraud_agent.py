@@ -1,58 +1,32 @@
 """
 fraud_agent.py
 --------------
-Five-signal fraud detection engine for car insurance claims.
-
-Signals computed deterministically before any LLM call:
-  1. Frequent denied/flagged claims  (MongoDB Claim_History)
-  2. Collusion shop match            (repair shop name)
-  3. Staging detection               (narrative severity vs. estimate — lightweight LLM)
-  4. Claim velocity                  (claims in last 365 days)
-  5. Risk/loss profile mismatch      (High Risk customer + high-value claim)
-
-A single synthesis LLM call combines all signals into a structured FraudReport.
-Post-LLM escalation rules ensure deterministic signals cannot be downgraded by
-the LLM.  All pre-computed anomalies are merged back into the final report so
-they cannot be silently dropped.
+Five-signal fraud detection engine with Groq key rotation support.
 """
 
 import logging
 import time
 from datetime import datetime, timedelta
 from enum import Enum
-from functools import lru_cache
 from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_groq import ChatGroq
 from pydantic import BaseModel
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from src.tools.groq_client import get_llm, record_429, record_success
 from src.tools.mongo_client import get_db
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-GROQ_MODEL = "llama-3.3-70b-versatile"
 COLLUSION_SHOP = "Apex AutoBody & Collision"
-
-FREQUENT_CLAIM_THRESHOLD = 3       # denied/flagged claims to trigger flag
-VELOCITY_WINDOW_DAYS = 365         # lookback window for claim velocity
-VELOCITY_THRESHOLD = 3             # claims in window to trigger anomaly
-STAGING_SEVERITY_THRESHOLD = 7    # narrative severity score (1–10) to suspect staging
-STAGING_ESTIMATE_CAP = 1_000      # max estimate (USD) paired with high severity
-HIGH_VALUE_LOSS_THRESHOLD = 10_000 # loss above which High Risk profile is flagged
-
+FREQUENT_CLAIM_THRESHOLD = 3
+VELOCITY_WINDOW_DAYS = 365
+VELOCITY_THRESHOLD = 3
+STAGING_SEVERITY_THRESHOLD = 7
+STAGING_ESTIMATE_CAP = 1_000
+HIGH_VALUE_LOSS_THRESHOLD = 10_000
 LLM_MAX_RETRIES = 3
-LLM_RETRY_WAIT_MIN = 2
-LLM_RETRY_WAIT_MAX = 10
 
-# ── Logging ────────────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
-
-
-# ── Lazy LLM singleton ─────────────────────────────────────────────────────────
-@lru_cache(maxsize=1)
-def _get_llm() -> ChatGroq:
-    return ChatGroq(model=GROQ_MODEL, temperature=0, request_timeout=30)
 
 
 # ── Output schemas ─────────────────────────────────────────────────────────────
@@ -72,7 +46,7 @@ class FraudReport(BaseModel):
 
 
 class _SeverityScore(BaseModel):
-    severity: int   # 1 (minor) – 10 (catastrophic)
+    severity: int
 
 
 # ── Prompts ────────────────────────────────────────────────────────────────────
@@ -122,25 +96,50 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 
-# ── Retry-wrapped LLM calls ────────────────────────────────────────────────────
-@retry(
-    retry=retry_if_exception_type(Exception),
-    stop=stop_after_attempt(LLM_MAX_RETRIES),
-    wait=wait_exponential(min=LLM_RETRY_WAIT_MIN, max=LLM_RETRY_WAIT_MAX),
-    reraise=True,
-)
-def _invoke_severity(chain, inputs: dict) -> _SeverityScore:
-    return chain.invoke(inputs)
+# ── 429-aware LLM invocations ──────────────────────────────────────────────────
+
+def _invoke_severity(inputs: dict) -> _SeverityScore:
+    last_exc = None
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            llm = get_llm()
+            chain = _SEVERITY_PROMPT | llm.with_structured_output(_SeverityScore)
+            result = chain.invoke(inputs)
+            record_success()
+            return result
+        except Exception as exc:
+            last_exc = exc
+            exc_str = str(exc).lower()
+            if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
+                logger.warning("fraud_agent | severity 429 (attempt %d)", attempt + 1)
+                record_429()
+                time.sleep(2 ** attempt)
+            else:
+                logger.warning("fraud_agent | severity LLM error (attempt %d): %s", attempt + 1, exc)
+                time.sleep(2 ** attempt)
+    raise last_exc
 
 
-@retry(
-    retry=retry_if_exception_type(Exception),
-    stop=stop_after_attempt(LLM_MAX_RETRIES),
-    wait=wait_exponential(min=LLM_RETRY_WAIT_MIN, max=LLM_RETRY_WAIT_MAX),
-    reraise=True,
-)
-def _invoke_fraud(chain, inputs: dict) -> FraudReport:
-    return chain.invoke(inputs)
+def _invoke_fraud(inputs: dict) -> FraudReport:
+    last_exc = None
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            llm = get_llm()
+            chain = _FRAUD_PROMPT | llm.with_structured_output(FraudReport)
+            result = chain.invoke(inputs)
+            record_success()
+            return result
+        except Exception as exc:
+            last_exc = exc
+            exc_str = str(exc).lower()
+            if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
+                logger.warning("fraud_agent | synthesis 429 (attempt %d)", attempt + 1)
+                record_429()
+                time.sleep(2 ** attempt)
+            else:
+                logger.warning("fraud_agent | synthesis LLM error (attempt %d): %s", attempt + 1, exc)
+                time.sleep(2 ** attempt)
+    raise last_exc
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -164,11 +163,6 @@ def _format_anomalies(anomalies: list[str]) -> str:
 
 # ── Main agent function ────────────────────────────────────────────────────────
 def run_fraud_agent(state: dict) -> dict:
-    """
-    Populates state["fraud_report"] with a FraudReport dict.
-    Appends to state["errors"] on HIGH risk detection.
-    Never raises — always returns a valid state dict.
-    """
     t_start = time.perf_counter()
     errors: list[str] = list(state.get("errors", []))
     sanitized: dict = state.get("sanitized_data", {})
@@ -191,10 +185,8 @@ def run_fraud_agent(state: dict) -> dict:
         history_records: list[dict] = list(
             db["Claim_History"].find({"customer_id": customer_id}, {"_id": 0})
         )
-        logger.debug("claim=%s | fetched %d history records", claim_id, len(history_records))
     except Exception as exc:
         errors.append(f"Fraud agent: Claim_History query failed — {exc}")
-        logger.exception("MongoDB query failed for claim %s", claim_id)
         return {**state, "fraud_report": None, "errors": errors}
 
     # ── Signal 1: Frequent denied/flagged claims ───────────────────────────────
@@ -203,28 +195,19 @@ def run_fraud_agent(state: dict) -> dict:
         if r.get("claim_status") in ("Denied", "Fraud_Flagged")
     )
     frequent_claims_flag = denied_flagged_count >= FREQUENT_CLAIM_THRESHOLD
-    logger.debug("claim=%s | denied_flagged=%d | frequent=%s", claim_id, denied_flagged_count, frequent_claims_flag)
 
     # ── Signal 2: Collusion shop ───────────────────────────────────────────────
     collusion_flag = COLLUSION_SHOP.lower() in repair_shop.lower()
-    if collusion_flag:
-        logger.warning("claim=%s | collusion shop detected: '%s'", claim_id, repair_shop)
 
     # ── Signal 3: Staging detection ───────────────────────────────────────────
     staging_flag = False
     severity_score = 0
-    severity_chain = _SEVERITY_PROMPT | _get_llm().with_structured_output(_SeverityScore)
     try:
-        sev_result = _invoke_severity(severity_chain, {"narrative": narrative})
-        severity_score = max(1, min(10, sev_result.severity))  # clamp to [1, 10]
+        sev_result = _invoke_severity({"narrative": narrative})
+        severity_score = max(1, min(10, sev_result.severity))
         staging_flag = severity_score >= STAGING_SEVERITY_THRESHOLD and estimated_loss < STAGING_ESTIMATE_CAP
-        logger.debug(
-            "claim=%s | severity=%d | estimate=%.2f | staging=%s",
-            claim_id, severity_score, estimated_loss, staging_flag,
-        )
     except Exception as exc:
-        # Non-fatal: log and continue without the staging signal
-        logger.error("claim=%s | Severity scoring failed (staging signal skipped): %s", claim_id, exc)
+        logger.error("claim=%s | Severity scoring failed (non-fatal): %s", claim_id, exc)
         errors.append(f"Fraud agent: staging severity check failed (non-fatal) — {exc}")
 
     # ── Signal 4: Claim velocity ───────────────────────────────────────────────
@@ -239,9 +222,8 @@ def run_fraud_agent(state: dict) -> dict:
     ncd_tier: float = float(customer_profile.get("ncd_tier", 0.0))
     high_risk_high_value = risk_rating == "High Risk" and estimated_loss > HIGH_VALUE_LOSS_THRESHOLD
 
-    # ── Build deterministic anomalies (ground-truth — LLM cannot remove these) ─
+    # ── Build deterministic anomalies ─────────────────────────────────────────
     deterministic_anomalies: list[str] = []
-
     if frequent_claims_flag:
         deterministic_anomalies.append(
             f"Frequent denied/flagged claims: {denied_flagged_count} records "
@@ -267,14 +249,7 @@ def run_fraud_agent(state: dict) -> dict:
             f"${estimated_loss:,.2f} (threshold: ${HIGH_VALUE_LOSS_THRESHOLD:,})."
         )
 
-    logger.info(
-        "claim=%s | signals: frequent=%s collusion=%s staging=%s velocity=%d high_risk_hv=%s | anomalies=%d",
-        claim_id, frequent_claims_flag, collusion_flag, staging_flag,
-        recent_claim_count, high_risk_high_value, len(deterministic_anomalies),
-    )
-
     # ── Synthesis LLM call ─────────────────────────────────────────────────────
-    fraud_chain = _FRAUD_PROMPT | _get_llm().with_structured_output(FraudReport)
     llm_inputs = {
         "claim_id": claim_id,
         "incident_type": sanitized.get("incident_type", ""),
@@ -294,15 +269,12 @@ def run_fraud_agent(state: dict) -> dict:
     }
 
     try:
-        report: FraudReport = _invoke_fraud(fraud_chain, llm_inputs)
-        logger.info("claim=%s | LLM risk_score=%s", claim_id, report.risk_score)
+        report: FraudReport = _invoke_fraud(llm_inputs)
     except Exception as exc:
         errors.append(f"Fraud agent LLM failed after {LLM_MAX_RETRIES} retries: {exc}")
-        logger.exception("Fraud synthesis LLM failed for claim %s", claim_id)
         return {**state, "fraud_report": None, "errors": errors}
 
-    # ── Merge anomalies: pre-computed signals cannot be dropped by the LLM ────
-    # Dedup while preserving order: deterministic signals listed first
+    # ── Merge anomalies ────────────────────────────────────────────────────────
     seen: set[str] = set()
     merged_anomalies: list[str] = []
     for item in deterministic_anomalies + report.anomalies:
@@ -310,7 +282,7 @@ def run_fraud_agent(state: dict) -> dict:
             seen.add(item)
             merged_anomalies.append(item)
 
-    # ── Post-LLM risk escalation (deterministic overrides) ────────────────────
+    # ── Post-LLM risk escalation ───────────────────────────────────────────────
     final_risk = report.risk_score
     escalation_note: Optional[str] = None
 
@@ -321,7 +293,6 @@ def run_fraud_agent(state: dict) -> dict:
             f"(severity={severity_score}, estimate=${estimated_loss:,.2f})."
         )
         logger.warning("claim=%s | %s", claim_id, escalation_note)
-
     elif (frequent_claims_flag or collusion_flag) and final_risk == RiskLevel.LOW:
         final_risk = RiskLevel.MEDIUM
         escalation_note = (

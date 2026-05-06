@@ -3,11 +3,7 @@ policy_agent.py
 ---------------
 Retrieves the relevant insurance policy via Pinecone RAG, performs semantic
 exclusion matching, checks for aggregate limit breaches, and returns a
-structured PolicyVerdict.
-
-All financial calculations are deterministic (Python) — never delegated to
-the LLM.  The dual-gate exclusion logic requires BOTH a cosine-similarity
-signal AND LLM confirmation before an exclusion is triggered.
+structured PolicyVerdict.  Uses the centralized Groq key rotation manager.
 """
 
 import logging
@@ -16,35 +12,26 @@ from functools import lru_cache
 from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_groq import ChatGroq
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
+from src.tools.groq_client import get_llm, record_429, record_success
 from src.tools.mongo_client import get_pinecone_index
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-GROQ_MODEL = "llama-3.3-70b-versatile"
 EXCLUSION_SIMILARITY_THRESHOLD = 0.35
 EMBEDDER_MODEL = "all-MiniLM-L6-v2"
 LLM_MAX_RETRIES = 3
-LLM_RETRY_WAIT_MIN = 2   # seconds
-LLM_RETRY_WAIT_MAX = 10  # seconds
 
-# ── Logging ────────────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 
-# ── Lazy singletons ────────────────────────────────────────────────────────────
+
+# ── Lazy embedder singleton ────────────────────────────────────────────────────
 @lru_cache(maxsize=1)
 def _get_embedder() -> SentenceTransformer:
     logger.info("Loading SentenceTransformer model: %s", EMBEDDER_MODEL)
     return SentenceTransformer(EMBEDDER_MODEL)
-
-
-@lru_cache(maxsize=1)
-def _get_llm() -> ChatGroq:
-    return ChatGroq(model=GROQ_MODEL, temperature=0, request_timeout=30)
 
 
 # ── Output schema ──────────────────────────────────────────────────────────────
@@ -56,7 +43,7 @@ class PolicyVerdict(BaseModel):
     coverage_scope: str
     exclusions: str
     total_historical_payout: float
-    remaining_limit: float          # always overridden with Python-computed value post-LLM
+    remaining_limit: float
     incident_covered: bool
     exclusion_triggered: bool
     exclusion_reason: str = ""
@@ -101,24 +88,32 @@ _PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 
-# ── Retry-wrapped LLM call ─────────────────────────────────────────────────────
-@retry(
-    retry=retry_if_exception_type(Exception),
-    stop=stop_after_attempt(LLM_MAX_RETRIES),
-    wait=wait_exponential(min=LLM_RETRY_WAIT_MIN, max=LLM_RETRY_WAIT_MAX),
-    reraise=True,
-)
-def _invoke_llm(chain, inputs: dict) -> PolicyVerdict:
-    return chain.invoke(inputs)
+# ── 429-aware LLM invocation ───────────────────────────────────────────────────
+
+def _invoke_llm(inputs: dict) -> PolicyVerdict:
+    last_exc = None
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            llm = get_llm()
+            chain = _PROMPT | llm.with_structured_output(PolicyVerdict)
+            result = chain.invoke(inputs)
+            record_success()
+            return result
+        except Exception as exc:
+            last_exc = exc
+            exc_str = str(exc).lower()
+            if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
+                logger.warning("policy_agent | 429 detected (attempt %d)", attempt + 1)
+                record_429()
+                time.sleep(2 ** attempt)
+            else:
+                logger.warning("policy_agent | LLM error (attempt %d): %s", attempt + 1, exc)
+                time.sleep(2 ** attempt)
+    raise last_exc
 
 
 # ── Pinecone retrieval ─────────────────────────────────────────────────────────
 def _fetch_policy(policy_id: str, narrative_embedding: list) -> Optional[dict]:
-    """
-    Primary  : exact policy_id filter.
-    Fallback : top-1 unfiltered — accepted only if policy_id still matches,
-               preventing adjudication against a different customer's policy.
-    """
     index = get_pinecone_index()
 
     result = index.query(
@@ -145,17 +140,11 @@ def _fetch_policy(policy_id: str, narrative_embedding: list) -> Optional[dict]:
             meta.get("policy_id"),
             policy_id,
         )
-
     return None
 
 
 # ── Main agent function ────────────────────────────────────────────────────────
 def run_policy_agent(state: dict) -> dict:
-    """
-    Populates state["policy_verdict"] with a PolicyVerdict dict.
-    Appends to state["errors"] on any detected issue.
-    Never raises — always returns a valid state dict.
-    """
     t_start = time.perf_counter()
     errors: list[str] = list(state.get("errors", []))
     sanitized: dict = state.get("sanitized_data", {})
@@ -175,21 +164,17 @@ def run_policy_agent(state: dict) -> dict:
         errors.append("Policy agent: narrative missing from sanitized_data.")
         return {**state, "policy_verdict": None, "errors": errors}
 
-    # ── Embeddings ─────────────────────────────────────────────────────────────
     embedder = _get_embedder()
     try:
-        narrative_vec = embedder.encode(narrative)          # shape (384,)
+        narrative_vec = embedder.encode(narrative)
     except Exception as exc:
         errors.append(f"Policy agent: embedding failed — {exc}")
-        logger.exception("Embedding failed for claim %s", claim_id)
         return {**state, "policy_verdict": None, "errors": errors}
 
-    # ── Policy retrieval ───────────────────────────────────────────────────────
     try:
         policy_meta = _fetch_policy(policy_id, narrative_vec.tolist())
     except Exception as exc:
         errors.append(f"Policy agent: Pinecone query failed — {exc}")
-        logger.exception("Pinecone query failed for claim %s", claim_id)
         return {**state, "policy_verdict": None, "errors": errors}
 
     if not policy_meta:
@@ -199,7 +184,7 @@ def run_policy_agent(state: dict) -> dict:
     # ── Deterministic financial calculations ───────────────────────────────────
     aggregate_limit: float = float(policy_meta.get("aggregate_limit", 0))
     total_historical_payout: float = float(policy_meta.get("total_historical_payout", 0))
-    remaining_limit: float = aggregate_limit - total_historical_payout  # always Python-computed
+    remaining_limit: float = aggregate_limit - total_historical_payout
 
     aggregate_breach = estimated_loss > remaining_limit
     if aggregate_breach:
@@ -224,12 +209,11 @@ def run_policy_agent(state: dict) -> dict:
             claim_id, similarity, semantic_exclusion_signal,
         )
     except Exception as exc:
-        logger.warning("claim=%s | Exclusion similarity failed (defaulting to False): %s", claim_id, exc)
+        logger.warning("claim=%s | Exclusion similarity failed: %s", claim_id, exc)
         semantic_exclusion_signal = False
         similarity = 0.0
 
     # ── LLM adjudication ──────────────────────────────────────────────────────
-    chain = _PROMPT | _get_llm().with_structured_output(PolicyVerdict)
     llm_inputs = {
         "claim_id": claim_id,
         "incident_type": sanitized.get("incident_type", ""),
@@ -246,19 +230,16 @@ def run_policy_agent(state: dict) -> dict:
     }
 
     try:
-        verdict: PolicyVerdict = _invoke_llm(chain, llm_inputs)
+        verdict: PolicyVerdict = _invoke_llm(llm_inputs)
         logger.info(
             "claim=%s | LLM verdict: covered=%s exclusion=%s",
             claim_id, verdict.incident_covered, verdict.exclusion_triggered,
         )
     except Exception as exc:
         errors.append(f"Policy agent LLM failed after {LLM_MAX_RETRIES} retries: {exc}")
-        logger.exception("LLM failed for claim %s", claim_id)
         return {**state, "policy_verdict": None, "errors": errors}
 
     # ── Post-LLM deterministic overrides ──────────────────────────────────────
-    # Rule 1: Dual-gate — suppress LLM exclusion if semantic similarity is insufficient.
-    #         The LLM alone cannot trigger an exclusion; semantic evidence is required.
     if not semantic_exclusion_signal and verdict.exclusion_triggered:
         logger.info(
             "claim=%s | LLM exclusion suppressed (similarity %.4f < threshold %.2f).",
@@ -266,8 +247,6 @@ def run_policy_agent(state: dict) -> dict:
         )
         verdict = verdict.model_copy(update={"exclusion_triggered": False, "exclusion_reason": ""})
 
-    # Rule 2: Always use Python-computed remaining_limit — never trust LLM arithmetic.
-    # Rule 3: Force incident_covered=False if aggregate breach or exclusion confirmed.
     overrides: dict = {"remaining_limit": remaining_limit}
     if aggregate_breach or verdict.exclusion_triggered:
         overrides["incident_covered"] = False
