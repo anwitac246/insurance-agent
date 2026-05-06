@@ -8,8 +8,11 @@ from pymongo import MongoClient
 from pinecone import Pinecone, ServerlessSpec
 from sentence_transformers import SentenceTransformer
 
-load_dotenv()
+from pathlib import Path
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
+
+os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN", "")
 fake = Faker()
 model = SentenceTransformer("all-MiniLM-L6-v2")
 

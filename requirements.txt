@@ -1,5 +1,7 @@
 pymongo
-pinecone-client
+pinecone
 faker 
 sentence-transformers 
 python-dotenv
+fastapi
+uvicorn
