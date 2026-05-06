@@ -8,11 +8,8 @@ from pymongo import MongoClient
 from pinecone import Pinecone, ServerlessSpec
 from sentence_transformers import SentenceTransformer
 
-from pathlib import Path
-load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
+load_dotenv()
 
-
-os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN", "")
 fake = Faker()
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -66,20 +63,43 @@ NORMAL_NARRATIVES = [
     "The vehicle skidded on an icy road and impacted a concrete median barrier. Airbags deployed and front bumper is destroyed.",
     "Claimant's parked vehicle was struck by a reversing neighbor who left a note with their contact details.",
     "A stray shopping cart in a grocery store parking lot rolled into the vehicle, causing a dent and paint damage on the rear quarter panel.",
+    "Claimant was rear-ended at a highway on-ramp by a distracted driver. Both parties exchanged insurance information and a police report was filed.",
+    "A deer ran across the road and struck the front right corner of the vehicle. Headlight assembly, bumper, and hood require replacement.",
+    "Flooding from an overnight storm caused water ingress into the cabin. Engine hydrolocked when claimant attempted to start the vehicle.",
+    "Claimant's vehicle was sideswiped in a narrow parking garage by an unknown driver who did not leave contact information.",
 ]
 
 FRAUD_NARRATIVES = {
     "frequent_claimant_vandalism": [
         "Claimant reports the vehicle was vandalized overnight; all four tires slashed and 'PAYBACK' keyed into the hood. No witnesses and no camera footage available.",
         "Returned to find the windshield smashed and the interior ransacked. Claims a laptop and camera equipment were also stolen from inside the vehicle.",
+        "Claimant states the vehicle was spray-painted and both wing mirrors were snapped off while parked outside their residence. No CCTV in the area.",
+        "All four tyres were found flat and the bonnet was dented with what appeared to be a blunt object. Claimant filed a police report but no suspects identified.",
+        "Claimant reports the vehicle was keyed along every panel and the rear windshield was shattered. Incident allegedly occurred in a poorly lit alleyway.",
+        "Discovered vehicle with slashed convertible roof and stolen stereo equipment. Claimant states no alarm was triggered despite an active security system.",
     ],
     "staged_accident": [
         "A massive multi-vehicle pileup occurred on the highway involving at least twelve vehicles. Multiple lanes were blocked for hours. Emergency services were on scene for six hours. Claimant's bumper shows a small scuff.",
         "A catastrophic chain-reaction collision during rush hour involving nine vehicles including two semi-trucks. The insured vehicle was supposedly caught in the center of the pile-up. Repair estimate submitted is $200.",
+        "Claimant describes a severe T-bone collision at a busy intersection causing extensive structural damage. Attending officer noted only a minor paint transfer on the driver-side door.",
+        "Claimant was allegedly boxed in by two vehicles on a motorway and forced into the central reservation. Dashcam footage was unavailable as the device was 'not charging that day'.",
+        "A large SUV reportedly ran a red light and collided head-on with the insured vehicle at moderate speed. Independent accident reconstruction estimates impact force inconsistent with reported damage.",
     ],
     "semantic_exclusion": [
+        # Track / circuit racing
         "Claimant was driving at high speed on a closed circuit track during a private event when they lost control on a hairpin and struck the barrier.",
         "Vehicle was damaged while the driver was participating in a timed lap competition on a closed-circuit road course. Engine bay sustained fire damage.",
+        "Claimant states the incident occurred during a track day at a motorsport facility. The vehicle left the asphalt on a high-speed corner and hit a tyre wall.",
+        "Damage occurred when the insured vehicle spun out during a timed autocross session held on private property. Roll-cage intrusion noted in repair estimate.",
+        # Off-road / unpaved terrain
+        "Claimant took the vehicle off-road on an unpaved forest trail for recreational purposes. The undercarriage was severely damaged after high-centering on a boulder.",
+        "Vehicle sustained axle and suspension damage after the claimant drove down a rocky riverbed during a camping trip. No paved road was involved at any point.",
+        # DUI / intoxicated driving
+        "Police report accompanying the claim notes the claimant was arrested at the scene for driving under the influence of alcohol. Blood-alcohol level recorded at 0.14.",
+        "Claimant admits to consuming alcohol at a private party before driving home. Single-vehicle collision with a parked car occurred two blocks from the venue.",
+        # Rideshare / commercial use
+        "Incident occurred while the claimant was actively transporting a fare via a rideshare platform. Trip receipt and GPS data confirm commercial use at time of loss.",
+        "Claimant was using the insured vehicle as an unlicensed taxi at the time of the accident. Passenger statements corroborate commercial operation of the vehicle.",
     ],
     "collusion_ring": [
         "Claimant reports significant front-end damage following a collision at a busy intersection. Vehicle towed directly to Apex AutoBody & Collision for inspection.",
@@ -87,6 +107,9 @@ FRAUD_NARRATIVES = {
         "Hail damage across the vehicle's roof and hood was assessed. Claimant dropped the vehicle off at Apex AutoBody & Collision the following day.",
         "Side-swipe damage along the entire driver side. Vehicle is currently at Apex AutoBody & Collision awaiting parts.",
         "Claimant discovered vandalism damage after leaving a shopping center. Immediately drove to Apex AutoBody & Collision for an estimate.",
+        "Rear quarter-panel damage sustained in a car park. Claimant states Apex AutoBody & Collision was strongly recommended by their mechanic.",
+        "Vehicle struck a pothole causing rim and suspension damage. Claimant insisted on having the assessment performed exclusively at Apex AutoBody & Collision.",
+        "Windshield shattered by a stone chip on the motorway. Claimant bypassed three closer repair shops to bring the vehicle to Apex AutoBody & Collision.",
     ],
 }
 
@@ -125,11 +148,11 @@ for i in range(NUM_CUSTOMERS):
     cid = str(uuid.uuid4())
     pid = str(uuid.uuid4())
 
-    is_frequent_claimant = i < 5
-    is_collusion = 5 <= i < 10
-    is_staged = 10 <= i < 15
-    is_semantic_exclusion = 15 <= i < 18
-    is_aggregate_breach = 18 <= i < 22
+    is_frequent_claimant  = i < 5
+    is_collusion          = 5  <= i < 13   # 8 customers → 8 collusion narratives
+    is_staged             = 13 <= i < 18   # 5 customers → 5 staged narratives
+    is_semantic_exclusion = 18 <= i < 28   # 10 customers → 10 semantic_exclusion narratives
+    is_aggregate_breach   = 28 <= i < 32   # 4 customers
 
     if is_frequent_claimant:
         frequent_claimant_ids.append(cid)
@@ -151,19 +174,19 @@ for i in range(NUM_CUSTOMERS):
     all_histories.extend(history)
     total_paid = sum(h["payout_amount"] for h in history)
 
-    policy_limit = random.choice([15000, 20000, 25000, 30000])
-    aggregate_limit = random.choice([50000, 75000, 100000])
-    deductible = random.choice([250, 500, 750, 1000])
-    coverage = random.choice(COVERAGE_TEMPLATES)
-    exclusions = random.choice(EXCLUSION_TEMPLATES)
+    policy_limit     = random.choice([15000, 20000, 25000, 30000])
+    aggregate_limit  = random.choice([50000, 75000, 100000])
+    deductible       = random.choice([250, 500, 750, 1000])
+    coverage         = random.choice(COVERAGE_TEMPLATES)
+    exclusions       = random.choice(EXCLUSION_TEMPLATES)
 
     customer = {
-        "customer_id": cid,
-        "full_name": fake.name(),
-        "tenure_months": random.randint(1, 240),
-        "ncd_tier": ncd,
-        "risk_rating": risk,
-        "policy_id": pid,
+        "customer_id":    cid,
+        "full_name":      fake.name(),
+        "tenure_months":  random.randint(1, 240),
+        "ncd_tier":       ncd,
+        "risk_rating":    risk,
+        "policy_id":      pid,
     }
     customers.append(customer)
 
@@ -181,80 +204,90 @@ for i in range(NUM_CUSTOMERS):
         "id": pid,
         "values": embedding,
         "metadata": {
-            "policy_id": pid,
-            "customer_id": cid,
-            "customer_name": customer["full_name"],
-            "coverage_scope": coverage,
-            "policy_limit": policy_limit,
-            "aggregate_limit": aggregate_limit,
-            "deductible": deductible,
-            "exclusions": exclusions,
-            "total_historical_payout": total_paid,
+            "policy_id":                pid,
+            "customer_id":              cid,
+            "customer_name":            customer["full_name"],
+            "coverage_scope":           coverage,
+            "policy_limit":             policy_limit,
+            "aggregate_limit":          aggregate_limit,
+            "deductible":               deductible,
+            "exclusions":               exclusions,
+            "total_historical_payout":  total_paid,
         },
     })
 
+    # ── Active claim generation ──────────────────────────────────────────────
+    ocr_estimate = None   # only overridden for staged accidents
+
     if is_frequent_claimant:
-        narrative = random.choice(FRAUD_NARRATIVES["frequent_claimant_vandalism"])
+        narrative     = random.choice(FRAUD_NARRATIVES["frequent_claimant_vandalism"])
         incident_type = "Vandalism"
         estimated_loss = round(random.uniform(800, 3000), 2)
-        shop = fake.company() + " Auto Repair"
+        shop          = fake.company() + " Auto Repair"
+
     elif is_collusion:
-        narrative = FRAUD_NARRATIVES["collusion_ring"][i - 5]
+        # cycle safely through all 8 collusion narratives
+        narrative     = FRAUD_NARRATIVES["collusion_ring"][(i - 5) % len(FRAUD_NARRATIVES["collusion_ring"])]
         incident_type = random.choice(["Rear-end", "Vandalism", "Hit and Run"])
         estimated_loss = round(random.uniform(2000, 12000), 2)
-        shop = COLLUSION_SHOP
+        shop          = COLLUSION_SHOP
+
     elif is_staged:
-        narrative = random.choice(FRAUD_NARRATIVES["staged_accident"])
+        narrative     = FRAUD_NARRATIVES["staged_accident"][(i - 13) % len(FRAUD_NARRATIVES["staged_accident"])]
         incident_type = "Rear-end"
         estimated_loss = round(random.uniform(8000, 20000), 2)
-        shop = fake.company() + " Collision Center"
-        ocr_estimate = 200.0
+        shop          = fake.company() + " Collision Center"
+        ocr_estimate  = 200.0
+
     elif is_semantic_exclusion:
-        narrative = FRAUD_NARRATIVES["semantic_exclusion"][i - 15]
+        narrative     = FRAUD_NARRATIVES["semantic_exclusion"][(i - 18) % len(FRAUD_NARRATIVES["semantic_exclusion"])]
         incident_type = "Total Loss"
         estimated_loss = round(random.uniform(15000, 28000), 2)
-        shop = fake.company() + " Motorsport Repairs"
+        shop          = fake.company() + " Motorsport Repairs"
+
     elif is_aggregate_breach:
-        breach_amount = aggregate_limit - total_paid + random.uniform(5000, 15000)
+        breach_amount  = aggregate_limit - total_paid + random.uniform(5000, 15000)
         estimated_loss = round(max(breach_amount, 1000), 2)
-        narrative = random.choice(NORMAL_NARRATIVES)
-        incident_type = random.choice(INCIDENT_TYPES)
-        shop = fake.company() + " Auto Body"
+        narrative      = random.choice(NORMAL_NARRATIVES)
+        incident_type  = random.choice(INCIDENT_TYPES)
+        shop           = fake.company() + " Auto Body"
+
     else:
-        narrative = random.choice(NORMAL_NARRATIVES)
-        incident_type = random.choice(INCIDENT_TYPES)
+        narrative      = random.choice(NORMAL_NARRATIVES)
+        incident_type  = random.choice(INCIDENT_TYPES)
         estimated_loss = round(random.uniform(500, policy_limit * 0.9), 2)
-        shop = fake.company() + " Auto Repair"
+        shop           = fake.company() + " Auto Repair"
 
     loss_date = gen_date(days_back_max=180)
 
     ocr_extraction = {
-        "PolicyNumber": pid[:8].upper(),
-        "ClaimantName": customer["full_name"],
-        "LossDate": loss_date,
+        "PolicyNumber":   pid[:8].upper(),
+        "ClaimantName":   customer["full_name"],
+        "LossDate":       loss_date,
         "RepairShopName": shop,
-        "TotalEstimate": ocr_estimate if is_staged else estimated_loss,
+        "TotalEstimate":  ocr_estimate if ocr_estimate is not None else estimated_loss,
     }
 
     active_claims.append({
-        "claim_id": str(uuid.uuid4()),
-        "policy_id": pid,
-        "customer_id": cid,
+        "claim_id":      str(uuid.uuid4()),
+        "policy_id":     pid,
+        "customer_id":   cid,
         "incident_type": incident_type,
         "incident_date": loss_date,
-        "narrative": narrative,
+        "narrative":     narrative,
         "ocr_extraction": ocr_extraction,
         "estimated_loss": estimated_loss,
         "fraud_scenario": (
-            "frequent_claimant" if is_frequent_claimant else
-            "collusion_ring" if is_collusion else
-            "staged_accident" if is_staged else
+            "frequent_claimant"  if is_frequent_claimant  else
+            "collusion_ring"     if is_collusion          else
+            "staged_accident"    if is_staged             else
             "semantic_exclusion" if is_semantic_exclusion else
-            "aggregate_breach" if is_aggregate_breach else
+            "aggregate_breach"   if is_aggregate_breach   else
             "normal"
         ),
     })
 
+# ── Persist to MongoDB ───────────────────────────────────────────────────────
 db["Customer_Profiles"].insert_many(customers)
 print(f"[MongoDB] Inserted {len(customers)} Customer_Profiles")
 
@@ -264,22 +297,25 @@ print(f"[MongoDB] Inserted {len(all_histories)} Claim_History records")
 db["Active_Claims"].insert_many(active_claims)
 print(f"[MongoDB] Inserted {len(active_claims)} Active_Claims")
 
+# ── Persist to Pinecone ──────────────────────────────────────────────────────
 BATCH_SIZE = 50
 for start in range(0, len(policies_pinecone), BATCH_SIZE):
     batch = policies_pinecone[start: start + BATCH_SIZE]
     index.upsert(vectors=batch)
 print(f"[Pinecone] Upserted {len(policies_pinecone)} Insurance_Policies vectors")
 
+# ── Indexes ──────────────────────────────────────────────────────────────────
 db["Customer_Profiles"].create_index("customer_id", unique=True)
 db["Claim_History"].create_index("customer_id")
 db["Claim_History"].create_index("history_id", unique=True)
 db["Active_Claims"].create_index("claim_id", unique=True)
 db["Active_Claims"].create_index("policy_id")
 
+# ── Summary ──────────────────────────────────────────────────────────────────
 print("\n[Summary] Fraud scenario distribution:")
 from collections import Counter
 scenario_counts = Counter(c["fraud_scenario"] for c in active_claims)
-for scenario, count in scenario_counts.items():
+for scenario, count in sorted(scenario_counts.items()):
     print(f"  {scenario}: {count} records")
 
 print("\n[Done] Referential integrity: all policy_id and customer_id values are consistent across MongoDB and Pinecone.")

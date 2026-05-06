@@ -214,3 +214,18 @@ The `fraud_scenario` field on each `Active_Claims` record is your ground truth f
 | `sentence-transformers` | Run the `all-MiniLM-L6-v2` model locally to generate 384-dim embeddings |
 | `faker` | Generate realistic customer names and company names |
 | `python-dotenv` | Load `MONGODB_URL` and `PINECONE_API_KEY` from the `.env` file |
+
+[MongoDB] Inserted 50 Customer_Profiles
+[MongoDB] Inserted 98 Claim_History records
+[MongoDB] Inserted 50 Active_Claims
+[Pinecone] Upserted 50 Insurance_Policies vectors
+
+[Summary] Fraud scenario distribution:
+  aggregate_breach: 4 records
+  collusion_ring: 8 records
+  frequent_claimant: 5 records
+  normal: 18 records
+  semantic_exclusion: 10 records
+  staged_accident: 5 records
+
+[Done] Referential integrity: all policy_id and customer_id values are consistent across MongoDB and Pinecone.
