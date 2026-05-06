@@ -111,7 +111,7 @@ pipeline automatically adapts.
 All LLM calls (agents + evaluation judges) use **Groq** exclusively.
 No Anthropic API key is required anywhere in this project.
 
-Model used: `llama-3.3-70b-versatile`
+Model used: `llama-3.1-8b-instant`
 
 ---
 

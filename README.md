@@ -9,7 +9,7 @@ This is a production-grade, stateful, and modular multi-agent backend system des
 
 * **Backend Framework**: FastAPI (Asynchronous background task processing)
 * **Agent Orchestration**: LangGraph (StateGraph for routing and cyclic flows)
-* **LLM Provider**: Groq (`llama-3.3-70b-versatile` for text, `llama-3.2-11b-vision-preview` for damage analysis)
+* **LLM Provider**: Groq (`llama-3.1-8b-instant` for text, `llama-3.2-11b-vision-preview` for damage analysis)
 * **Vector Database**: Pinecone (RAG lookups for policy rules and fraud case studies)
 * **Relational/Document Database**: MongoDB (Motor async driver) for Claim State persistence and internal "Ground Truth" data.
 * **OCR Tools**: Tesseract / PaddleOCR (for extracting raw text from submitted PDFs/images)

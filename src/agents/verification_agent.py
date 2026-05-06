@@ -1,26 +1,20 @@
 """
 verification_agent.py
 ---------------------
-Document verification agent with Groq key rotation support.
+Document verification agent — async-first, with sync wrapper for compatibility.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-    before_sleep_log,
-)
 
-from src.tools.groq_client import get_llm, record_429, record_success
+from src.tools.groq_client import get_async_llm, record_429, record_success
 from src.tools.mongo_client import get_db
 
 logger = logging.getLogger(__name__)
@@ -65,16 +59,15 @@ _prompt = ChatPromptTemplate.from_messages([
 ])
 
 
-# ── Retry-wrapped LLM call ─────────────────────────────────────────────────────
+# ── Async LLM invocation ───────────────────────────────────────────────────────
 
-def _invoke_ocr(inputs: dict) -> OcrExtraction:
-    """Invoke OCR parsing with 429-aware key rotation and tenacity retry."""
+async def _ainvoke_ocr(inputs: dict) -> OcrExtraction:
     last_exc = None
     for attempt in range(LLM_MAX_RETRIES):
         try:
-            llm = get_llm()
+            llm = get_async_llm()
             chain = _prompt | llm.with_structured_output(OcrExtraction)
-            result = chain.invoke(inputs)
+            result = await chain.ainvoke(inputs)
             record_success()
             return result
         except Exception as exc:
@@ -83,24 +76,21 @@ def _invoke_ocr(inputs: dict) -> OcrExtraction:
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("verification_agent | 429 detected (attempt %d)", attempt + 1)
                 record_429()
-                # brief pause before retry — the manager may have already rotated the key
-                time.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** attempt)
             else:
                 logger.warning("verification_agent | LLM error (attempt %d): %s", attempt + 1, exc)
-                time.sleep(2 ** attempt)
-
+                await asyncio.sleep(2 ** attempt)
     raise last_exc
 
 
-# ── Main agent function ────────────────────────────────────────────────────────
+# ── Async main ─────────────────────────────────────────────────────────────────
 
-def run_verification_agent(state: dict) -> dict:
+async def arun_verification_agent(state: dict) -> dict:
     t0 = time.perf_counter()
     db = get_db()
     errors: list[str] = list(state.get("errors", []))
     claim_id: str = state.get("claim_id", "")
 
-    # ── Fetch claim ────────────────────────────────────────────────────────────
     claim = db["Active_Claims"].find_one({"claim_id": claim_id})
     if not claim:
         return {
@@ -109,11 +99,10 @@ def run_verification_agent(state: dict) -> dict:
         }
 
     raw_data = {k: v for k, v in claim.items() if k != "_id"}
-
-    # ── OCR parsing ────────────────────────────────────────────────────────────
     ocr_raw = claim.get("ocr_extraction", {})
+
     try:
-        parsed_ocr: OcrExtraction = _invoke_ocr({"ocr_json": str(ocr_raw)})
+        parsed_ocr: OcrExtraction = await _ainvoke_ocr({"ocr_json": str(ocr_raw)})
     except Exception as exc:
         logger.exception("OCR parsing failed for claim %s", claim_id)
         return {
@@ -122,7 +111,6 @@ def run_verification_agent(state: dict) -> dict:
             "errors": errors + [f"OCR parsing failed: {exc}"],
         }
 
-    # ── Cross-check against Customer_Profiles ─────────────────────────────────
     customer = db["Customer_Profiles"].find_one({"customer_id": claim["customer_id"]})
     discrepancies: list[str] = []
     name_match = False
@@ -189,3 +177,9 @@ def run_verification_agent(state: dict) -> dict:
         "verification_output": verification_output.model_dump(),
         "errors": errors,
     }
+
+
+# ── Sync wrapper (for LangGraph compatibility) ─────────────────────────────────
+
+def run_verification_agent(state: dict) -> dict:
+    return asyncio.run(arun_verification_agent(state))

@@ -1,9 +1,16 @@
 """
 fraud_agent.py
 --------------
-Five-signal fraud detection engine with Groq key rotation support.
+Five-signal fraud detection engine — async-first.
+
+Key performance improvements vs. original:
+  - Async LLM calls via ainvoke
+  - Severity scoring uses llama-3.1-8b-instant (fast model) instead of 70B —
+    it's a simple 1-10 integer classification that doesn't need the large model
+  - DB query runs before LLM calls to avoid blocking
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
@@ -13,7 +20,12 @@ from typing import Optional
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel
 
-from src.tools.groq_client import get_llm, record_429, record_success
+from src.tools.groq_client import (
+    get_async_llm,
+    get_async_fast_llm,
+    record_429,
+    record_success,
+)
 from src.tools.mongo_client import get_db
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -30,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── Output schemas ─────────────────────────────────────────────────────────────
+
 class RiskLevel(str, Enum):
     LOW = "Low"
     MEDIUM = "Medium"
@@ -50,6 +63,7 @@ class _SeverityScore(BaseModel):
 
 
 # ── Prompts ────────────────────────────────────────────────────────────────────
+
 _SEVERITY_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -96,15 +110,16 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 
-# ── 429-aware LLM invocations ──────────────────────────────────────────────────
+# ── Async LLM invocations ──────────────────────────────────────────────────────
 
-def _invoke_severity(inputs: dict) -> _SeverityScore:
+async def _ainvoke_severity(inputs: dict) -> _SeverityScore:
+    """Uses the fast 8B model — simple integer classification doesn't need 70B."""
     last_exc = None
     for attempt in range(LLM_MAX_RETRIES):
         try:
-            llm = get_llm()
+            llm = get_async_fast_llm()   # ← fast model swap
             chain = _SEVERITY_PROMPT | llm.with_structured_output(_SeverityScore)
-            result = chain.invoke(inputs)
+            result = await chain.ainvoke(inputs)
             record_success()
             return result
         except Exception as exc:
@@ -113,20 +128,20 @@ def _invoke_severity(inputs: dict) -> _SeverityScore:
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("fraud_agent | severity 429 (attempt %d)", attempt + 1)
                 record_429()
-                time.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** attempt)
             else:
                 logger.warning("fraud_agent | severity LLM error (attempt %d): %s", attempt + 1, exc)
-                time.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** attempt)
     raise last_exc
 
 
-def _invoke_fraud(inputs: dict) -> FraudReport:
+async def _ainvoke_fraud(inputs: dict) -> FraudReport:
     last_exc = None
     for attempt in range(LLM_MAX_RETRIES):
         try:
-            llm = get_llm()
+            llm = get_async_llm()
             chain = _FRAUD_PROMPT | llm.with_structured_output(FraudReport)
-            result = chain.invoke(inputs)
+            result = await chain.ainvoke(inputs)
             record_success()
             return result
         except Exception as exc:
@@ -135,14 +150,15 @@ def _invoke_fraud(inputs: dict) -> FraudReport:
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("fraud_agent | synthesis 429 (attempt %d)", attempt + 1)
                 record_429()
-                time.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** attempt)
             else:
                 logger.warning("fraud_agent | synthesis LLM error (attempt %d): %s", attempt + 1, exc)
-                time.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** attempt)
     raise last_exc
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 def _summarize_history(records: list[dict]) -> str:
     if not records:
         return "No claim history found."
@@ -161,8 +177,9 @@ def _format_anomalies(anomalies: list[str]) -> str:
     return "\n".join(f"  • {a}" for a in anomalies)
 
 
-# ── Main agent function ────────────────────────────────────────────────────────
-def run_fraud_agent(state: dict) -> dict:
+# ── Async main ─────────────────────────────────────────────────────────────────
+
+async def arun_fraud_agent(state: dict) -> dict:
     t_start = time.perf_counter()
     errors: list[str] = list(state.get("errors", []))
     sanitized: dict = state.get("sanitized_data", {})
@@ -189,38 +206,34 @@ def run_fraud_agent(state: dict) -> dict:
         errors.append(f"Fraud agent: Claim_History query failed — {exc}")
         return {**state, "fraud_report": None, "errors": errors}
 
-    # ── Signal 1: Frequent denied/flagged claims ───────────────────────────────
+    # ── Deterministic signals (no LLM needed) ─────────────────────────────────
     denied_flagged_count = sum(
         1 for r in history_records
         if r.get("claim_status") in ("Denied", "Fraud_Flagged")
     )
     frequent_claims_flag = denied_flagged_count >= FREQUENT_CLAIM_THRESHOLD
-
-    # ── Signal 2: Collusion shop ───────────────────────────────────────────────
     collusion_flag = COLLUSION_SHOP.lower() in repair_shop.lower()
 
-    # ── Signal 3: Staging detection ───────────────────────────────────────────
-    staging_flag = False
-    severity_score = 0
-    try:
-        sev_result = _invoke_severity({"narrative": narrative})
-        severity_score = max(1, min(10, sev_result.severity))
-        staging_flag = severity_score >= STAGING_SEVERITY_THRESHOLD and estimated_loss < STAGING_ESTIMATE_CAP
-    except Exception as exc:
-        logger.error("claim=%s | Severity scoring failed (non-fatal): %s", claim_id, exc)
-        errors.append(f"Fraud agent: staging severity check failed (non-fatal) — {exc}")
-
-    # ── Signal 4: Claim velocity ───────────────────────────────────────────────
     cutoff_date = (datetime.now() - timedelta(days=VELOCITY_WINDOW_DAYS)).strftime("%Y-%m-%d")
     recent_claim_count = sum(
         1 for r in history_records
         if r.get("incident_date", "") >= cutoff_date
     )
 
-    # ── Signal 5: Risk/loss profile mismatch ──────────────────────────────────
     risk_rating: str = customer_profile.get("risk_rating", "")
     ncd_tier: float = float(customer_profile.get("ncd_tier", 0.0))
     high_risk_high_value = risk_rating == "High Risk" and estimated_loss > HIGH_VALUE_LOSS_THRESHOLD
+
+    # ── Signal 3: Staging — async severity scoring with fast model ─────────────
+    staging_flag = False
+    severity_score = 0
+    try:
+        sev_result = await _ainvoke_severity({"narrative": narrative})
+        severity_score = max(1, min(10, sev_result.severity))
+        staging_flag = severity_score >= STAGING_SEVERITY_THRESHOLD and estimated_loss < STAGING_ESTIMATE_CAP
+    except Exception as exc:
+        logger.error("claim=%s | Severity scoring failed (non-fatal): %s", claim_id, exc)
+        errors.append(f"Fraud agent: staging severity check failed (non-fatal) — {exc}")
 
     # ── Build deterministic anomalies ─────────────────────────────────────────
     deterministic_anomalies: list[str] = []
@@ -249,7 +262,7 @@ def run_fraud_agent(state: dict) -> dict:
             f"${estimated_loss:,.2f} (threshold: ${HIGH_VALUE_LOSS_THRESHOLD:,})."
         )
 
-    # ── Synthesis LLM call ─────────────────────────────────────────────────────
+    # ── Synthesis LLM call (70B model) ─────────────────────────────────────────
     llm_inputs = {
         "claim_id": claim_id,
         "incident_type": sanitized.get("incident_type", ""),
@@ -269,7 +282,7 @@ def run_fraud_agent(state: dict) -> dict:
     }
 
     try:
-        report: FraudReport = _invoke_fraud(llm_inputs)
+        report: FraudReport = await _ainvoke_fraud(llm_inputs)
     except Exception as exc:
         errors.append(f"Fraud agent LLM failed after {LLM_MAX_RETRIES} retries: {exc}")
         return {**state, "fraud_report": None, "errors": errors}
@@ -325,3 +338,9 @@ def run_fraud_agent(state: dict) -> dict:
     )
 
     return {**state, "fraud_report": report.model_dump(), "errors": errors}
+
+
+# ── Sync wrapper ───────────────────────────────────────────────────────────────
+
+def run_fraud_agent(state: dict) -> dict:
+    return asyncio.run(arun_fraud_agent(state))

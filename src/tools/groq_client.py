@@ -2,6 +2,7 @@
 groq_client.py
 --------------
 Centralized Groq LLM factory with automatic API key rotation.
+Supports both sync (get_llm) and async (get_async_llm) interfaces.
 
 Reads GROQ_API_KEYS from .env as a comma-separated list:
     GROQ_API_KEYS=key1,key2,key3
@@ -18,17 +19,6 @@ Rotation policy
   so callers fail fast rather than looping forever.
 - Keys rotate in round-robin order. Exhausted keys re-enter the pool after
   COOLDOWN_SECONDS (default 60) to handle transient rate limits.
-
-Usage
------
-    from src.tools.groq_client import get_llm, record_success, record_429
-
-    llm = get_llm()   # always returns the current active ChatGroq instance
-
-    # In your retry / exception handler:
-    except groq.RateLimitError:
-        record_429()
-        llm = get_llm()   # may return a new instance on a fresh key
 """
 
 from __future__ import annotations
@@ -46,9 +36,10 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
-ROTATION_THRESHOLD = 5      # consecutive 429s before rotating
-COOLDOWN_SECONDS = 60       # seconds before an exhausted key re-enters the pool
+GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_FAST_MODEL = "llama-3.1-8b-instant"   # for simple classification tasks
+ROTATION_THRESHOLD = 5
+COOLDOWN_SECONDS = 60
 
 
 class GroqKeysExhaustedError(RuntimeError):
@@ -56,7 +47,6 @@ class GroqKeysExhaustedError(RuntimeError):
 
 
 def _load_keys() -> list[str]:
-    """Parse GROQ_API_KEYS (comma-separated) or fall back to GROQ_API_KEY."""
     multi = os.getenv("GROQ_API_KEYS", "")
     if multi:
         keys = [k.strip() for k in multi.split(",") if k.strip()]
@@ -76,7 +66,7 @@ def _load_keys() -> list[str]:
 
 
 class _KeyRotationManager:
-    """Thread-safe Groq API key rotation manager."""
+    """Thread-safe Groq API key rotation manager with sync + async LLM instances."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -85,42 +75,40 @@ class _KeyRotationManager:
         self._consecutive_429s: list[int] = [0] * len(self._keys)
         self._exhausted_at: list[Optional[float]] = [None] * len(self._keys)
         self._llm: Optional[ChatGroq] = None
-        self._build_llm()
+        self._async_llm: Optional[ChatGroq] = None
+        self._fast_llm: Optional[ChatGroq] = None
+        self._async_fast_llm: Optional[ChatGroq] = None
+        self._build_llms()
 
-    # ── Internal helpers ───────────────────────────────────────────────────────
-
-    def _build_llm(self) -> None:
-        """(Re)build the ChatGroq instance for the current active key."""
+    def _build_llms(self) -> None:
         key = self._keys[self._current_idx]
-        self._llm = ChatGroq(
-            model=GROQ_MODEL,
-            temperature=0,
-            request_timeout=45,
-            api_key=key,
-        )
+        shared_kwargs = dict(temperature=0, request_timeout=45, api_key=key)
+
+        # Sync instances
+        self._llm = ChatGroq(model=GROQ_MODEL, **shared_kwargs)
+        self._fast_llm = ChatGroq(model=GROQ_FAST_MODEL, **shared_kwargs)
+
+        # Async instances — same class, async methods called via ainvoke
+        self._async_llm = ChatGroq(model=GROQ_MODEL, **shared_kwargs)
+        self._async_fast_llm = ChatGroq(model=GROQ_FAST_MODEL, **shared_kwargs)
+
         logger.info(
             "groq_client | active key index=%d (***%s)",
-            self._current_idx,
-            key[-4:],
+            self._current_idx, key[-4:],
         )
 
     def _is_key_available(self, idx: int) -> bool:
-        """Return True if the key at idx is not exhausted (or cooldown has passed)."""
         exhausted_at = self._exhausted_at[idx]
         if exhausted_at is None:
             return True
         if time.monotonic() - exhausted_at >= COOLDOWN_SECONDS:
-            # Cooldown passed — reset this key
-            logger.info(
-                "groq_client | key index=%d cooled down, re-entering pool", idx
-            )
+            logger.info("groq_client | key index=%d cooled down, re-entering pool", idx)
             self._exhausted_at[idx] = None
             self._consecutive_429s[idx] = 0
             return True
         return False
 
     def _rotate(self) -> None:
-        """Switch to the next available key. Raises if all keys are exhausted."""
         num_keys = len(self._keys)
         for offset in range(1, num_keys + 1):
             candidate = (self._current_idx + offset) % num_keys
@@ -129,12 +117,10 @@ class _KeyRotationManager:
                 self._current_idx = candidate
                 logger.warning(
                     "groq_client | rotated from key index=%d to index=%d",
-                    old_idx,
-                    self._current_idx,
+                    old_idx, self._current_idx,
                 )
-                self._build_llm()
+                self._build_llms()
                 return
-
         raise GroqKeysExhaustedError(
             f"All {num_keys} Groq API key(s) are currently rate-limited. "
             f"Wait ~{COOLDOWN_SECONDS}s and retry."
@@ -145,35 +131,44 @@ class _KeyRotationManager:
     def get_llm(self) -> ChatGroq:
         with self._lock:
             if self._llm is None:
-                self._build_llm()
+                self._build_llms()
             return self._llm
 
+    def get_async_llm(self) -> ChatGroq:
+        with self._lock:
+            if self._async_llm is None:
+                self._build_llms()
+            return self._async_llm
+
+    def get_fast_llm(self) -> ChatGroq:
+        with self._lock:
+            if self._fast_llm is None:
+                self._build_llms()
+            return self._fast_llm
+
+    def get_async_fast_llm(self) -> ChatGroq:
+        with self._lock:
+            if self._async_fast_llm is None:
+                self._build_llms()
+            return self._async_fast_llm
+
     def record_success(self) -> None:
-        """Call after a successful LLM response to reset the 429 counter."""
         with self._lock:
             self._consecutive_429s[self._current_idx] = 0
 
     def record_429(self) -> None:
-        """
-        Call when a 429 / RateLimitError is caught.
-        Increments the counter; rotates the key if ROTATION_THRESHOLD is reached.
-        """
         with self._lock:
             self._consecutive_429s[self._current_idx] += 1
             count = self._consecutive_429s[self._current_idx]
             logger.warning(
                 "groq_client | 429 on key index=%d (consecutive=%d/%d)",
-                self._current_idx,
-                count,
-                ROTATION_THRESHOLD,
+                self._current_idx, count, ROTATION_THRESHOLD,
             )
-
             if count >= ROTATION_THRESHOLD:
                 self._exhausted_at[self._current_idx] = time.monotonic()
                 logger.warning(
                     "groq_client | key index=%d marked exhausted after %d consecutive 429s",
-                    self._current_idx,
-                    count,
+                    self._current_idx, count,
                 )
                 self._rotate()
 
@@ -195,18 +190,28 @@ def _get_manager() -> _KeyRotationManager:
 # ── Public interface ───────────────────────────────────────────────────────────
 
 def get_llm() -> ChatGroq:
-    """Return the currently active ChatGroq instance."""
+    """Return the currently active ChatGroq instance (sync)."""
     return _get_manager().get_llm()
 
 
+def get_async_llm() -> ChatGroq:
+    """Return the currently active ChatGroq instance for async calls."""
+    return _get_manager().get_async_llm()
+
+
+def get_fast_llm() -> ChatGroq:
+    """Return the fast (8B) ChatGroq instance for simple classification tasks (sync)."""
+    return _get_manager().get_fast_llm()
+
+
+def get_async_fast_llm() -> ChatGroq:
+    """Return the fast (8B) ChatGroq instance for async simple classification tasks."""
+    return _get_manager().get_async_fast_llm()
+
+
 def record_success() -> None:
-    """Signal a successful LLM call (resets the 429 counter for the active key)."""
     _get_manager().record_success()
 
 
 def record_429() -> None:
-    """
-    Signal a 429 / RateLimitError.
-    After ROTATION_THRESHOLD consecutive calls, the key is rotated automatically.
-    """
     _get_manager().record_429()

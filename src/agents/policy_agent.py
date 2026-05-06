@@ -3,9 +3,15 @@ policy_agent.py
 ---------------
 Retrieves the relevant insurance policy via Pinecone RAG, performs semantic
 exclusion matching, checks for aggregate limit breaches, and returns a
-structured PolicyVerdict.  Uses the centralized Groq key rotation manager.
+structured PolicyVerdict.
+
+Key performance improvements vs. original:
+  - Async LLM calls via ainvoke
+  - Embedding cache (LRU) for repeated narratives / policy texts
+  - Fast-path: if narrative embedding matches cached result, skip re-embed
 """
 
+import asyncio
 import logging
 import time
 from functools import lru_cache
@@ -16,10 +22,9 @@ from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from src.tools.groq_client import get_llm, record_429, record_success
+from src.tools.groq_client import get_async_llm, record_429, record_success
 from src.tools.mongo_client import get_pinecone_index
 
-# ── Constants ──────────────────────────────────────────────────────────────────
 EXCLUSION_SIMILARITY_THRESHOLD = 0.35
 EMBEDDER_MODEL = "all-MiniLM-L6-v2"
 LLM_MAX_RETRIES = 3
@@ -27,14 +32,29 @@ LLM_MAX_RETRIES = 3
 logger = logging.getLogger(__name__)
 
 
-# ── Lazy embedder singleton ────────────────────────────────────────────────────
+# ── Cached embedder singleton ──────────────────────────────────────────────────
+
 @lru_cache(maxsize=1)
 def _get_embedder() -> SentenceTransformer:
     logger.info("Loading SentenceTransformer model: %s", EMBEDDER_MODEL)
     return SentenceTransformer(EMBEDDER_MODEL)
 
 
+@lru_cache(maxsize=512)
+def _cached_encode(text: str) -> tuple:
+    """Cache embeddings by text content — returns a tuple (hashable) for LRU key."""
+    vec = _get_embedder().encode(text)
+    return tuple(vec.tolist())
+
+
+def _encode(text: str):
+    """Return a numpy-compatible list from the LRU cache."""
+    import numpy as np
+    return np.array(_cached_encode(text))
+
+
 # ── Output schema ──────────────────────────────────────────────────────────────
+
 class PolicyVerdict(BaseModel):
     policy_id: str
     policy_limit: float
@@ -51,6 +71,7 @@ class PolicyVerdict(BaseModel):
 
 
 # ── Prompt ─────────────────────────────────────────────────────────────────────
+
 _PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -88,15 +109,15 @@ _PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 
-# ── 429-aware LLM invocation ───────────────────────────────────────────────────
+# ── Async LLM invocation ───────────────────────────────────────────────────────
 
-def _invoke_llm(inputs: dict) -> PolicyVerdict:
+async def _ainvoke_llm(inputs: dict) -> PolicyVerdict:
     last_exc = None
     for attempt in range(LLM_MAX_RETRIES):
         try:
-            llm = get_llm()
+            llm = get_async_llm()
             chain = _PROMPT | llm.with_structured_output(PolicyVerdict)
-            result = chain.invoke(inputs)
+            result = await chain.ainvoke(inputs)
             record_success()
             return result
         except Exception as exc:
@@ -105,14 +126,15 @@ def _invoke_llm(inputs: dict) -> PolicyVerdict:
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("policy_agent | 429 detected (attempt %d)", attempt + 1)
                 record_429()
-                time.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** attempt)
             else:
                 logger.warning("policy_agent | LLM error (attempt %d): %s", attempt + 1, exc)
-                time.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** attempt)
     raise last_exc
 
 
 # ── Pinecone retrieval ─────────────────────────────────────────────────────────
+
 def _fetch_policy(policy_id: str, narrative_embedding: list) -> Optional[dict]:
     index = get_pinecone_index()
 
@@ -133,18 +155,17 @@ def _fetch_policy(policy_id: str, narrative_embedding: list) -> Optional[dict]:
     if result["matches"]:
         meta = result["matches"][0]["metadata"]
         if meta.get("policy_id") == policy_id:
-            logger.info("Fallback matched correct policy %s.", policy_id)
             return meta
         logger.error(
-            "Fallback returned policy %s — does not match expected %s. Refusing to use it.",
-            meta.get("policy_id"),
-            policy_id,
+            "Fallback returned policy %s — does not match expected %s. Refusing.",
+            meta.get("policy_id"), policy_id,
         )
     return None
 
 
-# ── Main agent function ────────────────────────────────────────────────────────
-def run_policy_agent(state: dict) -> dict:
+# ── Async main ─────────────────────────────────────────────────────────────────
+
+async def arun_policy_agent(state: dict) -> dict:
     t_start = time.perf_counter()
     errors: list[str] = list(state.get("errors", []))
     sanitized: dict = state.get("sanitized_data", {})
@@ -164,9 +185,10 @@ def run_policy_agent(state: dict) -> dict:
         errors.append("Policy agent: narrative missing from sanitized_data.")
         return {**state, "policy_verdict": None, "errors": errors}
 
-    embedder = _get_embedder()
+    # Embedding is CPU-bound — run in executor so it doesn't block the event loop
+    loop = asyncio.get_event_loop()
     try:
-        narrative_vec = embedder.encode(narrative)
+        narrative_vec = await loop.run_in_executor(None, _encode, narrative)
     except Exception as exc:
         errors.append(f"Policy agent: embedding failed — {exc}")
         return {**state, "policy_verdict": None, "errors": errors}
@@ -196,12 +218,14 @@ def run_policy_agent(state: dict) -> dict:
         errors.append(msg)
         logger.warning("claim=%s | %s", claim_id, msg)
 
-    # ── Semantic exclusion gate ────────────────────────────────────────────────
+    # ── Semantic exclusion gate (CPU-bound, run in executor) ───────────────────
     exclusions_text: str = policy_meta.get("exclusions", "")
+    semantic_exclusion_signal = False
+    similarity = 0.0
     try:
-        exclusion_vec = embedder.encode(exclusions_text).reshape(1, -1)
-        similarity: float = float(
-            cosine_similarity(narrative_vec.reshape(1, -1), exclusion_vec)[0][0]
+        exclusion_vec = await loop.run_in_executor(None, _encode, exclusions_text)
+        similarity = float(
+            cosine_similarity(narrative_vec.reshape(1, -1), exclusion_vec.reshape(1, -1))[0][0]
         )
         semantic_exclusion_signal = similarity > EXCLUSION_SIMILARITY_THRESHOLD
         logger.debug(
@@ -210,10 +234,8 @@ def run_policy_agent(state: dict) -> dict:
         )
     except Exception as exc:
         logger.warning("claim=%s | Exclusion similarity failed: %s", claim_id, exc)
-        semantic_exclusion_signal = False
-        similarity = 0.0
 
-    # ── LLM adjudication ──────────────────────────────────────────────────────
+    # ── Async LLM adjudication ─────────────────────────────────────────────────
     llm_inputs = {
         "claim_id": claim_id,
         "incident_type": sanitized.get("incident_type", ""),
@@ -230,7 +252,7 @@ def run_policy_agent(state: dict) -> dict:
     }
 
     try:
-        verdict: PolicyVerdict = _invoke_llm(llm_inputs)
+        verdict: PolicyVerdict = await _ainvoke_llm(llm_inputs)
         logger.info(
             "claim=%s | LLM verdict: covered=%s exclusion=%s",
             claim_id, verdict.incident_covered, verdict.exclusion_triggered,
@@ -263,3 +285,9 @@ def run_policy_agent(state: dict) -> dict:
     )
 
     return {**state, "policy_verdict": verdict.model_dump(), "errors": errors}
+
+
+# ── Sync wrapper ───────────────────────────────────────────────────────────────
+
+def run_policy_agent(state: dict) -> dict:
+    return asyncio.run(arun_policy_agent(state))

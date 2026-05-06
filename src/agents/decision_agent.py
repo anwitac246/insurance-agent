@@ -1,18 +1,19 @@
 """
 decision_agent.py
 -----------------
-Final claims adjudicator with Groq key rotation support.
+Final claims adjudicator — async-first.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from src.tools.groq_client import get_llm, record_429, record_success
+from src.tools.groq_client import get_async_llm, record_429, record_success
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +60,13 @@ _prompt = ChatPromptTemplate.from_messages([
 ])
 
 
-def _invoke(inputs: dict) -> DecisionOutput:
+async def _ainvoke(inputs: dict) -> DecisionOutput:
     last_exc = None
     for attempt in range(LLM_MAX_RETRIES):
         try:
-            llm = get_llm()
+            llm = get_async_llm()
             chain = _prompt | llm.with_structured_output(DecisionOutput)
-            result = chain.invoke(inputs)
+            result = await chain.ainvoke(inputs)
             record_success()
             return result
         except Exception as exc:
@@ -74,14 +75,14 @@ def _invoke(inputs: dict) -> DecisionOutput:
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("decision_agent | 429 detected (attempt %d)", attempt + 1)
                 record_429()
-                time.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** attempt)
             else:
                 logger.warning("decision_agent | LLM error (attempt %d): %s", attempt + 1, exc)
-                time.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** attempt)
     raise last_exc
 
 
-def run_decision_agent(state: dict) -> dict:
+async def arun_decision_agent(state: dict) -> dict:
     t0 = time.perf_counter()
     errors: list[str] = list(state.get("errors", []))
     sanitized = state.get("sanitized_data", {})
@@ -89,7 +90,7 @@ def run_decision_agent(state: dict) -> dict:
     fraud_report = state.get("fraud_report", {})
 
     try:
-        result: DecisionOutput = _invoke({
+        result: DecisionOutput = await _ainvoke({
             "claim_id": state.get("claim_id"),
             "estimated_loss": sanitized.get("estimated_loss", 0),
             "policy_verdict": str(policy_verdict),
@@ -116,3 +117,7 @@ def run_decision_agent(state: dict) -> dict:
         "final_payout": result.final_payout,
         "final_decision": result.model_dump(),
     }
+
+
+def run_decision_agent(state: dict) -> dict:
+    return asyncio.run(arun_decision_agent(state))
