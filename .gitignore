@@ -180,3 +180,5 @@ langsmith/
 models/
 huggingface/
 .cache_dir/
+
+results/

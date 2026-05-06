@@ -7,7 +7,7 @@ Run
 ---
     python -m evals.run_evals [--k 3] [--no-chaos] [--no-llm-judge]
                               [--output-dir evals/results] [--claims N]
-                              [--claim-ids id1 id2 ...]
+                              [--claim-ids id1 id2 ...] [--delay 2]
 
 Arguments
 ---------
@@ -17,6 +17,7 @@ Arguments
 --output-dir         Directory for JSON report and PNG chart (default: evals/results).
 --claims N           Process only the first N claims (default: all).
 --claim-ids          Explicit list of claim IDs to process.
+--delay              Seconds to sleep between claims to avoid Groq 429s (default: 2).
 
 Exit codes
 ----------
@@ -203,9 +204,17 @@ def run_evaluation(
     output_dir: str = "evals/results",
     max_claims: int | None = None,
     explicit_claim_ids: list[str] | None = None,
+    inter_claim_delay: float = 2.0,
 ) -> dict:
     """
     Full evaluation pipeline.
+
+    Parameters
+    ----------
+    inter_claim_delay : float
+        Seconds to sleep between consecutive claim calls to avoid Groq 429s.
+        Set to 0 to disable. Default is 2.0s which comfortably stays under
+        the free-tier RPM limit across all three LLM calls per claim.
 
     Returns the assembled report dict (also saved to disk as JSON + PNG).
     """
@@ -215,7 +224,7 @@ def run_evaluation(
 
     logger.info("═" * 60)
     logger.info("  Car Insurance MAS — Evaluation Run  [%s]", run_id)
-    logger.info("  K=%d  chaos=%s  llm_judge=%s", k, run_chaos, run_llm_judge)
+    logger.info("  K=%d  chaos=%s  llm_judge=%s  delay=%.1fs", k, run_chaos, run_llm_judge, inter_claim_delay)
     logger.info("═" * 60)
 
     # ── Load ground truth ──────────────────────────────────────────────────────
@@ -250,6 +259,10 @@ def run_evaluation(
         results.append(result)
         timing_records.append({"claim_id": cid, "total_s": elapsed, "per_agent": {}})
         token_records.append({"claim_id": cid, "per_agent": _extract_token_usage(result)})
+        # Throttle between claims to respect Groq free-tier RPM limits
+        if inter_claim_delay > 0 and i < len(claim_ids):
+            logger.debug("Sleeping %.1fs before next claim…", inter_claim_delay)
+            time.sleep(inter_claim_delay)
 
     # ── Core metrics ───────────────────────────────────────────────────────────
     logger.info("Computing core metrics…")
@@ -274,10 +287,12 @@ def run_evaluation(
         logger.info("Running consistency sweep (K=%d)…", k)
         for run_num in range(2, k + 1):
             logger.info("  Consistency run %d/%d…", run_num, k)
-            for cid in claim_ids:
+            for j, cid in enumerate(claim_ids, 1):
                 result_k, _ = _timed_process(cid)
                 multi_run.setdefault(cid, [])
                 multi_run[cid].append(result_k)
+                if inter_claim_delay > 0 and j < len(claim_ids):
+                    time.sleep(inter_claim_delay)
 
         # Add the first-run results as run 1
         for r in results:
@@ -436,6 +451,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", default="evals/results", help="Output directory for reports")
     p.add_argument("--claims", type=int, default=None, help="Process first N claims only")
     p.add_argument("--claim-ids", nargs="+", default=None, help="Explicit claim IDs to process")
+    p.add_argument(
+        "--delay", type=float, default=2.0,
+        help="Seconds to sleep between claims to avoid Groq 429 rate limits (default 2.0, set 0 to disable)",
+    )
     return p.parse_args()
 
 
@@ -448,4 +467,5 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         max_claims=args.claims,
         explicit_claim_ids=args.claim_ids,
+        inter_claim_delay=args.delay,
     )
