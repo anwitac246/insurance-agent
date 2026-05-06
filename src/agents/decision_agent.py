@@ -1,18 +1,47 @@
-from pydantic import BaseModel, Field
+"""
+decision_agent.py
+-----------------
+Final claims adjudicator.
+
+Migrated from ChatAnthropic → ChatGroq (llama-3.3-70b-versatile).
+No Anthropic API key is required anywhere in this project.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from functools import lru_cache
+
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_anthropic import ChatAnthropic
+from langchain_groq import ChatGroq
+from pydantic import BaseModel, Field
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+logger = logging.getLogger(__name__)
+
+GROQ_MODEL = "llama-3.3-70b-versatile"
+LLM_MAX_RETRIES = 3
 
 
 class DecisionOutput(BaseModel):
     approved: bool
-    final_payout: float = Field(description="Calculated payout after deductible and limit checks")
+    final_payout: float = Field(
+        description="Calculated payout after deductible and limit checks"
+    )
     denial_reason: str = Field(default="")
     step_by_step_reasoning: str = Field(
-        description="Full chain-of-thought: loss amount, deductible subtraction, limit cap, fraud/exclusion adjustments"
+        description=(
+            "Full chain-of-thought: loss amount, deductible subtraction, "
+            "limit cap, fraud/exclusion adjustments"
+        )
     )
 
 
-_llm = ChatAnthropic(model="claude-3-5-sonnet-20241022", temperature=0)
+@lru_cache(maxsize=1)
+def _get_llm() -> ChatGroq:
+    return ChatGroq(model=GROQ_MODEL, temperature=0, request_timeout=45)
+
 
 _prompt = ChatPromptTemplate.from_messages([
     (
@@ -39,17 +68,28 @@ _prompt = ChatPromptTemplate.from_messages([
     ),
 ])
 
-_chain = _prompt | _llm.with_structured_output(DecisionOutput)
+
+@retry(
+    retry=retry_if_exception_type(Exception),
+    stop=stop_after_attempt(LLM_MAX_RETRIES),
+    wait=wait_exponential(min=2, max=10),
+    reraise=True,
+)
+def _invoke(chain, inputs: dict) -> DecisionOutput:
+    return chain.invoke(inputs)
 
 
 def run_decision_agent(state: dict) -> dict:
+    t0 = time.perf_counter()
     errors: list[str] = list(state.get("errors", []))
     sanitized = state.get("sanitized_data", {})
     policy_verdict = state.get("policy_verdict", {})
     fraud_report = state.get("fraud_report", {})
 
+    chain = _prompt | _get_llm().with_structured_output(DecisionOutput)
+
     try:
-        result: DecisionOutput = _chain.invoke({
+        result: DecisionOutput = _invoke(chain, {
             "claim_id": state.get("claim_id"),
             "estimated_loss": sanitized.get("estimated_loss", 0),
             "policy_verdict": str(policy_verdict),
@@ -57,12 +97,19 @@ def run_decision_agent(state: dict) -> dict:
             "errors": errors if errors else "None",
         })
     except Exception as exc:
+        logger.exception("Decision agent failed for claim %s", state.get("claim_id"))
         return {
             **state,
             "errors": errors + [f"Decision agent failed: {exc}"],
             "final_payout": 0.0,
-            "final_decision": {"approved": False, "reason": str(exc)},
+            "final_decision": {"approved": False, "denial_reason": str(exc)},
         }
+
+    elapsed = time.perf_counter() - t0
+    logger.info(
+        "decision_agent | claim=%s | approved=%s | payout=%.2f | %.2fs",
+        state.get("claim_id"), result.approved, result.final_payout, elapsed,
+    )
 
     return {
         **state,
