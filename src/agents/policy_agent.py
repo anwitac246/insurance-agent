@@ -6,20 +6,25 @@ exclusion matching, checks for aggregate limit breaches, and returns a
 structured PolicyVerdict.
 
 Key fixes vs. previous version:
-  - 400 Bad Request errors now fail immediately (non-retryable).
-  - Format specifiers ({estimated_loss:,.2f}) removed from ChatPromptTemplate
-    strings — values are pre-formatted as strings before being passed in.
-  - Embedding cache (LRU) for repeated narratives / policy texts retained.
+  - PolicyVerdict schema no longer has bare `bool` fields (incident_covered,
+    exclusion_triggered). Groq's function-calling validator rejects Python-style
+    True/False literals, producing 400 "tool_use_failed" errors. Replaced with
+    string literal enums ("yes"/"no") that are then converted deterministically
+    to booleans in post-processing — no LLM can hallucinate an invalid value.
+  - All post-LLM boolean logic (aggregate breach override, semantic exclusion
+    gate) runs AFTER conversion, same as before.
+  - 400 Bad Request errors still fail immediately (non-retryable).
+  - Embedding LRU cache retained.
 """
 
 import asyncio
 import logging
 import time
 from functools import lru_cache
-from typing import Optional
+from typing import Literal, Optional
 
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -43,7 +48,6 @@ def _get_embedder() -> SentenceTransformer:
 
 @lru_cache(maxsize=512)
 def _cached_encode(text: str) -> tuple:
-    """Cache embeddings by text content — returns a tuple (hashable) for LRU key."""
     vec = _get_embedder().encode(text)
     return tuple(vec.tolist())
 
@@ -54,7 +58,32 @@ def _encode(text: str):
 
 
 # ── Output schema ──────────────────────────────────────────────────────────────
+# IMPORTANT: incident_covered and exclusion_triggered use string literal enums
+# ("yes" / "no") instead of bool. Groq's validator rejects Python True/False
+# literals in function call output, causing 400 "tool_use_failed" errors.
+# We convert to bool deterministically after the LLM call.
 
+class _PolicyVerdictRaw(BaseModel):
+    """Internal schema sent to the LLM — uses string enums instead of booleans."""
+    policy_id: str
+    policy_limit: float
+    aggregate_limit: float
+    deductible: float
+    coverage_scope: str
+    exclusions: str
+    total_historical_payout: float
+    remaining_limit: float
+    incident_covered: Literal["yes", "no"] = Field(
+        description="Is the incident covered by the policy? Answer 'yes' or 'no'."
+    )
+    exclusion_triggered: Literal["yes", "no"] = Field(
+        description="Does an exclusion clause apply to this claim? Answer 'yes' or 'no'."
+    )
+    exclusion_reason: str = Field(default="")
+    coverage_reasoning: str
+
+
+# Public schema — proper booleans, used by downstream agents and metrics
 class PolicyVerdict(BaseModel):
     policy_id: str
     policy_limit: float
@@ -70,9 +99,25 @@ class PolicyVerdict(BaseModel):
     coverage_reasoning: str
 
 
+def _convert(raw: _PolicyVerdictRaw) -> PolicyVerdict:
+    """Convert string-enum booleans to proper Python bools."""
+    return PolicyVerdict(
+        policy_id=raw.policy_id,
+        policy_limit=raw.policy_limit,
+        aggregate_limit=raw.aggregate_limit,
+        deductible=raw.deductible,
+        coverage_scope=raw.coverage_scope,
+        exclusions=raw.exclusions,
+        total_historical_payout=raw.total_historical_payout,
+        remaining_limit=raw.remaining_limit,
+        incident_covered=raw.incident_covered == "yes",
+        exclusion_triggered=raw.exclusion_triggered == "yes",
+        exclusion_reason=raw.exclusion_reason,
+        coverage_reasoning=raw.coverage_reasoning,
+    )
+
+
 # ── Prompt ─────────────────────────────────────────────────────────────────────
-# NOTE: All float values are passed as pre-formatted strings — no :,.2f inside
-# the template string, which causes LangChain to misparse the variable name.
 
 _PROMPT = ChatPromptTemplate.from_messages([
     (
@@ -84,11 +129,12 @@ _PROMPT = ChatPromptTemplate.from_messages([
         "Quote the exact exclusion text if applicable.\n"
         "  3. Is estimated_loss within remaining_limit? State the arithmetic.\n\n"
         "Rules:\n"
-        "  - Set exclusion_triggered=True ONLY if an exclusion clause directly and "
+        "  - Set exclusion_triggered to 'yes' ONLY if an exclusion clause directly and "
         "unambiguously applies to the narrative.\n"
-        "  - Set incident_covered=False if exclusion_triggered OR "
+        "  - Set incident_covered to 'no' if exclusion_triggered is 'yes' OR "
         "estimated_loss > remaining_limit.\n"
-        "  - Do NOT infer or guess exclusions — quote verbatim or leave exclusion_triggered=False.",
+        "  - Do NOT infer or guess exclusions — quote verbatim or set exclusion_triggered to 'no'.\n"
+        "  - For incident_covered and exclusion_triggered, you MUST answer exactly 'yes' or 'no'.",
     ),
     (
         "human",
@@ -106,7 +152,8 @@ _PROMPT = ChatPromptTemplate.from_messages([
         "Deductible              : ${deductible}\n"
         "Total Historical Payout : ${total_historical_payout}\n"
         "Remaining Limit         : ${remaining_limit}\n\n"
-        "Provide a complete PolicyVerdict.",
+        "Provide a complete PolicyVerdict. "
+        "Remember: incident_covered and exclusion_triggered must be exactly 'yes' or 'no'.",
     ),
 ])
 
@@ -118,10 +165,10 @@ async def _ainvoke_llm(inputs: dict) -> PolicyVerdict:
     for attempt in range(LLM_MAX_RETRIES):
         try:
             llm = get_async_llm()
-            chain = _PROMPT | llm.with_structured_output(PolicyVerdict)
-            result = await chain.ainvoke(inputs)
+            chain = _PROMPT | llm.with_structured_output(_PolicyVerdictRaw)
+            raw: _PolicyVerdictRaw = await chain.ainvoke(inputs)
             record_success()
-            return result
+            return _convert(raw)
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
@@ -199,7 +246,6 @@ async def arun_policy_agent(state: dict) -> dict:
         errors.append("Policy agent: narrative missing from sanitized_data.")
         return {**state, "policy_verdict": None, "errors": errors}
 
-    # Embedding is CPU-bound — run in executor so it doesn't block the event loop
     loop = asyncio.get_event_loop()
     try:
         narrative_vec = await loop.run_in_executor(None, _encode, narrative)
@@ -232,7 +278,7 @@ async def arun_policy_agent(state: dict) -> dict:
         errors.append(msg)
         logger.warning("claim=%s | %s", claim_id, msg)
 
-    # ── Semantic exclusion gate (CPU-bound, run in executor) ───────────────────
+    # ── Semantic exclusion gate ────────────────────────────────────────────────
     exclusions_text: str = policy_meta.get("exclusions", "")
     semantic_exclusion_signal = False
     similarity = 0.0
@@ -251,7 +297,7 @@ async def arun_policy_agent(state: dict) -> dict:
     except Exception as exc:
         logger.warning("claim=%s | Exclusion similarity failed: %s", claim_id, exc)
 
-    # ── Async LLM adjudication — all floats pre-formatted as strings ───────────
+    # ── LLM adjudication ───────────────────────────────────────────────────────
     policy_limit = float(policy_meta.get("policy_limit", 0))
     deductible = float(policy_meta.get("deductible", 0))
 
@@ -259,7 +305,6 @@ async def arun_policy_agent(state: dict) -> dict:
         "claim_id": claim_id,
         "incident_type": sanitized.get("incident_type", ""),
         "narrative": narrative,
-        # Pre-format every float — avoids LangChain misparse of {:,.2f} in template
         "estimated_loss": f"{estimated_loss:,.2f}",
         "policy_id": policy_meta.get("policy_id", policy_id),
         "coverage_scope": policy_meta.get("coverage_scope", ""),

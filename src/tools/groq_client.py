@@ -15,10 +15,16 @@ Rotation policy
 - If a key hits ROTATION_THRESHOLD (default 5) consecutive 429s, it is marked
   exhausted and the next available key is activated.
 - On successful call, the counter for the active key resets to 0.
-- If ALL keys are exhausted, a GroqKeysExhaustedError is raised immediately
-  so callers fail fast rather than looping forever.
+- If ALL keys are exhausted, a GroqKeysExhaustedError is raised immediately.
 - Keys rotate in round-robin order. Exhausted keys re-enter the pool after
   COOLDOWN_SECONDS (default 60) to handle transient rate limits.
+
+Rate-limit helper
+-----------------
+`adaptive_sleep(base_delay)` should be called between claims in the eval loop.
+It returns the base_delay normally, but doubles it if a 429 was recorded in the
+last MIN_429_WINDOW_S seconds — giving the API time to recover before the next
+parallel_analysis node fires its two concurrent requests.
 """
 
 from __future__ import annotations
@@ -37,9 +43,12 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 GROQ_MODEL = "llama-3.1-8b-instant"
-GROQ_FAST_MODEL = "llama-3.1-8b-instant"   # for simple classification tasks
+GROQ_FAST_MODEL = "llama-3.1-8b-instant"
 ROTATION_THRESHOLD = 5
 COOLDOWN_SECONDS = 60
+
+# If a 429 occurred within this many seconds, adaptive_sleep doubles the delay
+MIN_429_WINDOW_S = 30.0
 
 
 class GroqKeysExhaustedError(RuntimeError):
@@ -74,6 +83,7 @@ class _KeyRotationManager:
         self._current_idx: int = 0
         self._consecutive_429s: list[int] = [0] * len(self._keys)
         self._exhausted_at: list[Optional[float]] = [None] * len(self._keys)
+        self._last_429_at: Optional[float] = None   # wall-clock time of most recent 429
         self._llm: Optional[ChatGroq] = None
         self._async_llm: Optional[ChatGroq] = None
         self._fast_llm: Optional[ChatGroq] = None
@@ -84,11 +94,8 @@ class _KeyRotationManager:
         key = self._keys[self._current_idx]
         shared_kwargs = dict(temperature=0, request_timeout=45, api_key=key)
 
-        # Sync instances
         self._llm = ChatGroq(model=GROQ_MODEL, **shared_kwargs)
         self._fast_llm = ChatGroq(model=GROQ_FAST_MODEL, **shared_kwargs)
-
-        # Async instances — same class, async methods called via ainvoke
         self._async_llm = ChatGroq(model=GROQ_MODEL, **shared_kwargs)
         self._async_fast_llm = ChatGroq(model=GROQ_FAST_MODEL, **shared_kwargs)
 
@@ -158,6 +165,7 @@ class _KeyRotationManager:
 
     def record_429(self) -> None:
         with self._lock:
+            self._last_429_at = time.monotonic()
             self._consecutive_429s[self._current_idx] += 1
             count = self._consecutive_429s[self._current_idx]
             logger.warning(
@@ -171,6 +179,13 @@ class _KeyRotationManager:
                     self._current_idx, count,
                 )
                 self._rotate()
+
+    def seconds_since_last_429(self) -> float:
+        """Returns elapsed seconds since the last recorded 429, or inf if none."""
+        with self._lock:
+            if self._last_429_at is None:
+                return float("inf")
+            return time.monotonic() - self._last_429_at
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────────
@@ -190,22 +205,18 @@ def _get_manager() -> _KeyRotationManager:
 # ── Public interface ───────────────────────────────────────────────────────────
 
 def get_llm() -> ChatGroq:
-    """Return the currently active ChatGroq instance (sync)."""
     return _get_manager().get_llm()
 
 
 def get_async_llm() -> ChatGroq:
-    """Return the currently active ChatGroq instance for async calls."""
     return _get_manager().get_async_llm()
 
 
 def get_fast_llm() -> ChatGroq:
-    """Return the fast (8B) ChatGroq instance for simple classification tasks (sync)."""
     return _get_manager().get_fast_llm()
 
 
 def get_async_fast_llm() -> ChatGroq:
-    """Return the fast (8B) ChatGroq instance for async simple classification tasks."""
     return _get_manager().get_async_fast_llm()
 
 
@@ -215,3 +226,29 @@ def record_success() -> None:
 
 def record_429() -> None:
     _get_manager().record_429()
+
+
+def adaptive_sleep(base_delay: float) -> float:
+    """
+    Sleep for base_delay seconds normally.
+    If a 429 was recorded in the last MIN_429_WINDOW_S seconds, sleep for
+    2× base_delay to let the API recover before the next parallel request pair.
+
+    Returns the actual sleep duration (useful for logging).
+
+    Usage in eval loop:
+        actual = adaptive_sleep(inter_claim_delay)
+        logger.debug("Slept %.1fs before next claim", actual)
+    """
+    manager = _get_manager()
+    since_429 = manager.seconds_since_last_429()
+    multiplier = 2.0 if since_429 < MIN_429_WINDOW_S else 1.0
+    actual = base_delay * multiplier
+    if multiplier > 1.0:
+        logger.info(
+            "groq_client | adaptive_sleep: 429 detected %.0fs ago — "
+            "sleeping %.1fs (2× base %.1fs)",
+            since_429, actual, base_delay,
+        )
+    time.sleep(actual)
+    return actual

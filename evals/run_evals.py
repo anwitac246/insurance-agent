@@ -11,7 +11,8 @@ Run
 
 Arguments
 ---------
---k                  Number of repeated runs per claim for consistency testing (default 3).
+--k                  Number of repeated runs per claim for consistency testing (default 1).
+                     Set to 3 for a full consistency sweep — note this multiplies runtime.
 --no-chaos           Skip chaos/corruption sweep (faster).
 --no-llm-judge       Skip Groundedness and Hallucination scoring (faster).
 --output-dir         Directory for JSON report and PNG chart (default: evals/results).
@@ -22,11 +23,23 @@ Arguments
                      simultaneously, so each claim consumes ~2x the RPM budget. The
                      default of 4s gives enough headroom on Groq free tier (30 RPM).
                      Set to 0 to disable throttling entirely (risky on free tier).
+--llm-judge-sample   Max claims to score with LLM judge (default: 5).
 
 Exit codes
 ----------
 0 — all metrics computed successfully
 1 — fatal error (missing env vars, empty DB, etc.)
+
+Speed notes
+-----------
+Default settings (--k 1 --no-chaos --llm-judge-sample 5) run ~50 claims sequentially
+with a 4s inter-claim delay: ~50 × (LLM latency + 4s) ≈ 8–12 min.
+
+To get a fast smoke-test result in ~2 min:
+    python -m evals.run_evals --claims 10 --k 1 --no-chaos --no-llm-judge --delay 2
+
+For a full production eval, use:
+    python -m evals.run_evals --k 3 --llm-judge-sample 10
 """
 
 from __future__ import annotations
@@ -34,12 +47,12 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import statistics
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-# Ensure the project root is on sys.path when running as a module
 ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -60,6 +73,7 @@ from evals.metrics import (
 )
 from evals.chaos import ChaosHarness
 from evals.reporter import build_report_chart, save_json_report
+from src.tools.groq_client import adaptive_sleep
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,7 +97,6 @@ except ImportError as exc:
 # ── Instrumented wrapper ───────────────────────────────────────────────────────
 
 def _timed_process(claim_id: str) -> tuple[dict, float]:
-    """Run the MAS and return (result, elapsed_seconds)."""
     t0 = time.perf_counter()
     try:
         result = _process_claim(claim_id)
@@ -100,10 +113,6 @@ def _timed_process(claim_id: str) -> tuple[dict, float]:
 
 
 def _extract_token_usage(result: dict) -> dict[str, int]:
-    """
-    Attempt to pull LangChain callback token counts from the result.
-    If the MAS doesn't surface them, we record 0 (non-fatal).
-    """
     usage = result.get("token_usage") or {}
     if not usage:
         return {
@@ -120,10 +129,16 @@ def _extract_token_usage(result: dict) -> dict[str, int]:
 def _run_llm_judge(
     results: list[dict],
     ground_truth: dict[str, GTRecord],
+    max_sample: int = 5,
 ) -> dict:
     """
     Run Groundedness and Hallucination judges on a sample of results.
-    Returns aggregated scores.
+
+    max_sample is intentionally small (default 5) to avoid rate-limit 429s
+    and keep eval runtime reasonable. Raise it with --llm-judge-sample if needed.
+
+    Both judges now return None on failure (400 / exhausted retries) rather than
+    raising — the eval run continues and the failed claims are counted separately.
     """
     try:
         from evals.llm_judge import GroundednessJudge, HallucinationJudge
@@ -138,13 +153,16 @@ def _run_llm_judge(
     hallucination_rates: list[float] = []
     judge_errors: list[str] = []
 
-    # Sample up to 20 claims to control cost and latency
-    sample = [r for r in results if r.get("policy_verdict")][:20]
+    # Sample only claims that have a policy_verdict (otherwise judge has nothing to score)
+    sample = [r for r in results if r.get("policy_verdict")][:max_sample]
+    logger.info("LLM judge: scoring %d / %d claims", len(sample), len(results))
 
-    for r in sample:
+    for i, r in enumerate(sample, 1):
         cid = r.get("claim_id", "unknown")
         pv = r.get("policy_verdict") or {}
         gt = ground_truth.get(cid)
+
+        logger.info("LLM judge [%d/%d] claim=%s", i, len(sample), cid)
 
         # ── Groundedness ──────────────────────────────────────────────────────
         try:
@@ -155,11 +173,17 @@ def _run_llm_judge(
                 f"Remaining Limit: {pv.get('remaining_limit', '')}."
             )
             g_score = g_judge.score(policy_text=policy_text, verdict=pv)
-            groundedness_scores.append(g_score.score)
-            logger.debug("claim=%s | groundedness=%d", cid, g_score.score)
+            if g_score is not None:
+                groundedness_scores.append(g_score.score)
+                logger.debug("claim=%s | groundedness=%d", cid, g_score.score)
+            else:
+                judge_errors.append(f"Groundedness returned None for {cid}")
         except Exception as exc:
             judge_errors.append(f"Groundedness failed for {cid}: {exc}")
             logger.warning("Groundedness judge error for %s: %s", cid, exc)
+
+        # Small pause between judge calls to avoid hitting RPM on free tier
+        time.sleep(2)
 
         # ── Hallucination ─────────────────────────────────────────────────────
         try:
@@ -169,31 +193,39 @@ def _run_llm_judge(
                     f"Claim: {gt.incident_type}, Loss: ${gt.estimated_loss:,.2f}, "
                     f"Scenario: {gt.fraud_scenario}. "
                     f"Policy: remaining_limit={pv.get('remaining_limit')}, "
-                    f"exclusions={str(pv.get('exclusions', ''))[:200]}."
+                    f"exclusions={str(pv.get('exclusions', ''))[:150]}."
                 )
                 h_report = h_judge.evaluate(facts=facts, reasoning=reasoning)
-                hallucination_rates.append(h_report.hallucination_rate)
-                logger.debug(
-                    "claim=%s | hallucination_rate=%.3f", cid, h_report.hallucination_rate
-                )
+                if h_report is not None:
+                    hallucination_rates.append(h_report.hallucination_rate)
+                    logger.debug(
+                        "claim=%s | hallucination_rate=%.3f", cid, h_report.hallucination_rate
+                    )
+                else:
+                    judge_errors.append(f"Hallucination returned None for {cid}")
         except Exception as exc:
             judge_errors.append(f"Hallucination failed for {cid}: {exc}")
             logger.warning("Hallucination judge error for %s: %s", cid, exc)
 
-    import statistics
+        # Pause between claims
+        time.sleep(2)
+
     return {
         "groundedness": {
             "mean_score": round(statistics.mean(groundedness_scores), 3) if groundedness_scores else None,
             "scores": groundedness_scores,
             "scale": "1 (unsupported) → 5 (fully grounded)",
             "claims_evaluated": len(groundedness_scores),
+            "claims_skipped": len(sample) - len(groundedness_scores),
         },
         "hallucination": {
             "mean_rate": round(statistics.mean(hallucination_rates), 4) if hallucination_rates else None,
             "rates": hallucination_rates,
             "claims_evaluated": len(hallucination_rates),
+            "claims_skipped": len(sample) - len(hallucination_rates),
         },
         "judge_errors": judge_errors,
+        "sample_size": len(sample),
     }
 
 
@@ -202,31 +234,22 @@ def _run_llm_judge(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_evaluation(
-    k: int = 3,
-    run_chaos: bool = True,
+    k: int = 1,
+    run_chaos: bool = False,
     run_llm_judge: bool = True,
     output_dir: str = "evals/results",
     max_claims: int | None = None,
     explicit_claim_ids: list[str] | None = None,
     inter_claim_delay: float = 4.0,
+    llm_judge_sample: int = 5,
 ) -> dict:
     """
     Full evaluation pipeline.
 
-    Parameters
-    ----------
-    inter_claim_delay : float
-        Seconds to sleep between consecutive claim calls to avoid Groq 429s.
-
-        IMPORTANT: The parallel_analysis node fires policy_agent AND fraud_agent
-        at the same time, so each claim effectively consumes 2 RPM slots
-        concurrently. With Groq free tier at ~30 RPM, a 4s delay keeps you
-        safely under the limit. Default changed from 2s → 4s for this reason.
-
-        Set to 0 to disable throttling (only safe if you have a paid Groq key
-        or are using GROQ_API_KEYS rotation with multiple keys).
-
-    Returns the assembled report dict (also saved to disk as JSON + PNG).
+    Parameter defaults are intentionally conservative for speed:
+      - k=1          (no consistency sweep — add --k 3 for full run)
+      - run_chaos=False (skipped by default — add --chaos to enable)
+      - llm_judge_sample=5  (score only 5 claims with the LLM judge)
     """
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = Path(output_dir)
@@ -235,8 +258,8 @@ def run_evaluation(
     logger.info("═" * 60)
     logger.info("  Car Insurance MAS — Evaluation Run  [%s]", run_id)
     logger.info(
-        "  K=%d  chaos=%s  llm_judge=%s  delay=%.1fs",
-        k, run_chaos, run_llm_judge, inter_claim_delay,
+        "  K=%d  chaos=%s  llm_judge=%s  delay=%.1fs  judge_sample=%d",
+        k, run_chaos, run_llm_judge, inter_claim_delay, llm_judge_sample,
     )
     logger.info("═" * 60)
 
@@ -274,12 +297,9 @@ def run_evaluation(
         timing_records.append({"claim_id": cid, "total_s": elapsed, "per_agent": {}})
         token_records.append({"claim_id": cid, "per_agent": _extract_token_usage(result)})
 
-        # Throttle between claims.
-        # Each claim fires 2 concurrent LLM requests (parallel_analysis) so the
-        # effective RPM spend is double what a sequential pipeline would use.
         if inter_claim_delay > 0 and i < len(claim_ids):
-            logger.debug("Sleeping %.1fs before next claim…", inter_claim_delay)
-            time.sleep(inter_claim_delay)
+            actual = adaptive_sleep(inter_claim_delay)
+            logger.debug("Slept %.1fs before next claim", actual)
 
     # ── Core metrics ───────────────────────────────────────────────────────────
     logger.info("Computing core metrics…")
@@ -298,24 +318,24 @@ def run_evaluation(
     )
 
     # ── Consistency (K runs) ───────────────────────────────────────────────────
+    # Only run if K > 1 — consistency at K=1 is trivially 1.0 and wastes budget.
     multi_run: dict[str, list[dict]] = {}
 
     if k > 1:
         logger.info("Running consistency sweep (K=%d)…", k)
+        # Seed multi_run with the first-pass results
+        for r in results:
+            cid = r.get("claim_id")
+            if cid:
+                multi_run[cid] = [r]
+
         for run_num in range(2, k + 1):
             logger.info("  Consistency run %d/%d…", run_num, k)
             for j, cid in enumerate(claim_ids, 1):
                 result_k, _ = _timed_process(cid)
-                multi_run.setdefault(cid, [])
                 multi_run[cid].append(result_k)
                 if inter_claim_delay > 0 and j < len(claim_ids):
-                    time.sleep(inter_claim_delay)
-
-        # Add the first-run results as run 1
-        for r in results:
-            cid = r.get("claim_id")
-            if cid:
-                multi_run.setdefault(cid, []).insert(0, r)
+                    adaptive_sleep(inter_claim_delay)
 
         cons_metrics = consistency_score(multi_run)
     else:
@@ -323,15 +343,18 @@ def run_evaluation(
             "mean_consistency": 1.0,
             "per_claim": {cid: 1.0 for cid in claim_ids},
             "k_runs": 1,
-            "note": "K=1, consistency not measured.",
+            "note": "K=1, consistency not measured. Use --k 3 for consistency sweep.",
         }
         logger.info("Skipping consistency (K=1).")
 
     # ── LLM-Judge ─────────────────────────────────────────────────────────────
     judge_metrics: dict = {}
     if run_llm_judge:
-        logger.info("Running LLM-as-Judge scoring (groundedness + hallucination)…")
-        judge_metrics = _run_llm_judge(results, ground_truth)
+        logger.info(
+            "Running LLM-as-Judge scoring (groundedness + hallucination, sample=%d)…",
+            llm_judge_sample,
+        )
+        judge_metrics = _run_llm_judge(results, ground_truth, max_sample=llm_judge_sample)
     else:
         logger.info("LLM judge skipped (--no-llm-judge).")
 
@@ -356,7 +379,7 @@ def run_evaluation(
             chaos_summary = {"error": str(exc)}
     else:
         chaos_summary = {}
-        logger.info("Chaos testing skipped (--no-chaos).")
+        logger.info("Chaos testing skipped (pass --chaos to enable).")
 
     # ── Assemble report ────────────────────────────────────────────────────────
     report = {
@@ -387,7 +410,6 @@ def run_evaluation(
         logger.warning("Chart generation failed (non-fatal): %s", exc)
 
     _print_summary(report)
-
     logger.info("Results saved to %s", out_dir)
     return report
 
@@ -450,9 +472,11 @@ def _print_summary(report: dict) -> None:
     g = jm.get("groundedness", {})
     h = jm.get("hallucination", {})
     if g.get("mean_score") is not None:
-        print(f"  Groundedness Score   : {g['mean_score']:.2f}/5.0")
+        print(f"  Groundedness Score   : {g['mean_score']:.2f}/5.0  "
+              f"(n={g.get('claims_evaluated', 0)})")
     if h.get("mean_rate") is not None:
-        print(f"  Hallucination Rate   : {h['mean_rate']*100:.1f}%")
+        print(f"  Hallucination Rate   : {h['mean_rate']*100:.1f}%  "
+              f"(n={h.get('claims_evaluated', 0)})")
     chaos = report.get("chaos", {})
     if chaos.get("degradation") is not None:
         print(f"  Chaos Degradation    : {chaos['degradation']*100:.1f}pp  "
@@ -474,12 +498,12 @@ def _print_summary(report: dict) -> None:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Car Insurance MAS Evaluation Pipeline")
     p.add_argument(
-        "--k", type=int, default=3,
-        help="Consistency runs per claim (default 3)",
+        "--k", type=int, default=1,
+        help="Consistency runs per claim (default 1 — use 3 for full sweep)",
     )
     p.add_argument(
-        "--no-chaos", action="store_true",
-        help="Skip chaos/corruption sweep",
+        "--chaos", action="store_true",
+        help="Enable chaos/corruption sweep (disabled by default for speed)",
     )
     p.add_argument(
         "--no-llm-judge", action="store_true",
@@ -501,9 +525,13 @@ def _parse_args() -> argparse.Namespace:
         "--delay", type=float, default=4.0,
         help=(
             "Seconds to sleep between claims (default 4.0). "
-            "parallel_analysis fires 2 concurrent LLM calls per claim, "
+            "Each claim fires 2 concurrent LLM calls (parallel_analysis), "
             "doubling effective RPM. Increase if you hit 429s; set 0 to disable."
         ),
+    )
+    p.add_argument(
+        "--llm-judge-sample", type=int, default=5,
+        help="Max claims to score with LLM judge (default 5)",
     )
     return p.parse_args()
 
@@ -512,10 +540,11 @@ if __name__ == "__main__":
     args = _parse_args()
     run_evaluation(
         k=args.k,
-        run_chaos=not args.no_chaos,
+        run_chaos=args.chaos,
         run_llm_judge=not args.no_llm_judge,
         output_dir=args.output_dir,
         max_claims=args.claims,
         explicit_claim_ids=args.claim_ids,
         inter_claim_delay=args.delay,
+        llm_judge_sample=args.llm_judge_sample,
     )

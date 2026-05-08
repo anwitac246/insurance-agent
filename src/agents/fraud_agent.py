@@ -4,15 +4,15 @@ fraud_agent.py
 Five-signal fraud detection engine — async-first.
 
 Key fixes vs. previous version:
-  - 400 Bad Request errors now fail immediately (non-retryable) instead of
-    retrying 3 times with exponential backoff.
-  - Format specifiers ({estimated_loss:,.2f}) removed from ChatPromptTemplate
-    strings — values are pre-formatted as strings before being passed in, to
-    avoid LangChain template-engine misparsing the colon syntax.
-  - Severity scoring no longer uses .with_structured_output() for a single
-    integer — plain text parsing is more reliable and avoids JSON schema
-    failures on Groq free tier.
-  - Claim history is capped at MAX_HISTORY_RECORDS to prevent context overflow.
+  - FraudReport schema no longer has bare bool fields (frequent_claims_flag,
+    collusion_flag, staging_flag). Groq's function-calling validator rejects
+    Python True/False literals in structured output with 400 "tool_use_failed".
+    Replaced with Literal["yes","no"] in the internal _FraudReportRaw schema;
+    a _convert() function produces the proper-bool FraudReport after the call.
+  - All post-LLM deterministic overrides still apply to the converted result.
+  - 400 Bad Request errors fail immediately (non-retryable).
+  - Severity scoring uses plain text (no structured output) — unchanged.
+  - Claim history capped at MAX_HISTORY_RECORDS — unchanged.
 """
 
 import asyncio
@@ -20,7 +20,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel
@@ -42,7 +42,7 @@ STAGING_SEVERITY_THRESHOLD = 7
 STAGING_ESTIMATE_CAP = 1_000
 HIGH_VALUE_LOSS_THRESHOLD = 10_000
 LLM_MAX_RETRIES = 3
-MAX_HISTORY_RECORDS = 10          # cap sent to LLM to avoid context overflow
+MAX_HISTORY_RECORDS = 10
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,17 @@ class RiskLevel(str, Enum):
     HIGH = "High"
 
 
+# Internal schema sent to LLM — string enums instead of booleans
+class _FraudReportRaw(BaseModel):
+    risk_score: RiskLevel
+    frequent_claims_flag: Literal["yes", "no"]
+    collusion_flag: Literal["yes", "no"]
+    staging_flag: Literal["yes", "no"]
+    anomalies: list[str]
+    reasoning: str
+
+
+# Public schema — proper Python bools, used by downstream agents and metrics
 class FraudReport(BaseModel):
     risk_score: RiskLevel
     frequent_claims_flag: bool
@@ -64,10 +75,20 @@ class FraudReport(BaseModel):
     reasoning: str
 
 
+def _convert(raw: _FraudReportRaw) -> FraudReport:
+    """Convert string-enum booleans to proper Python bools."""
+    return FraudReport(
+        risk_score=raw.risk_score,
+        frequent_claims_flag=raw.frequent_claims_flag == "yes",
+        collusion_flag=raw.collusion_flag == "yes",
+        staging_flag=raw.staging_flag == "yes",
+        anomalies=raw.anomalies,
+        reasoning=raw.reasoning,
+    )
+
+
 # ── Prompts ────────────────────────────────────────────────────────────────────
 
-# NOTE: No Python format specifiers (e.g. :,.2f) inside the template strings.
-# All float values are pre-formatted to strings before being passed as inputs.
 _SEVERITY_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -88,7 +109,9 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
         "Reason step by step through every signal before assigning a RiskLevel.\n\n"
         "IMPORTANT: Your anomalies list MUST include every item from the "
         "'Pre-computed Deterministic Anomalies' section, verbatim, plus any additional "
-        "ones you identify. You may not drop or omit any pre-computed anomaly.",
+        "ones you identify. You may not drop or omit any pre-computed anomaly.\n\n"
+        "For frequent_claims_flag, collusion_flag, and staging_flag you MUST answer "
+        "exactly 'yes' or 'no' — no other value is accepted.",
     ),
     (
         "human",
@@ -109,7 +132,9 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
         "=== Customer Profile ===\n"
         "Risk Rating: {risk_rating}\n"
         "NCD Tier   : {ncd_tier}\n\n"
-        "Produce a complete FraudReport.",
+        "Produce a complete FraudReport. "
+        "Remember: frequent_claims_flag, collusion_flag, and staging_flag must be "
+        "exactly 'yes' or 'no'.",
     ),
 ])
 
@@ -117,20 +142,13 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
 # ── Async LLM invocations ──────────────────────────────────────────────────────
 
 async def _ainvoke_severity(inputs: dict) -> int:
-    """
-    Uses the fast 8B model with plain text output instead of structured output.
-    Parsing a single integer from free text is far more reliable than forcing
-    a JSON schema on Groq's free tier for a trivial classification task.
-    Returns an integer in [1, 10]; defaults to 5 on parse failure.
-    """
     last_exc = None
     for attempt in range(LLM_MAX_RETRIES):
         try:
             llm = get_async_fast_llm()
-            chain = _SEVERITY_PROMPT | llm   # no .with_structured_output()
+            chain = _SEVERITY_PROMPT | llm
             result = await chain.ainvoke(inputs)
             text = result.content.strip()
-            # Extract the first run of digits from the response
             digits = "".join(ch for ch in text.split()[0] if ch.isdigit())
             score = int(digits) if digits else 5
             record_success()
@@ -160,10 +178,10 @@ async def _ainvoke_fraud(inputs: dict) -> FraudReport:
     for attempt in range(LLM_MAX_RETRIES):
         try:
             llm = get_async_llm()
-            chain = _FRAUD_PROMPT | llm.with_structured_output(FraudReport)
-            result = await chain.ainvoke(inputs)
+            chain = _FRAUD_PROMPT | llm.with_structured_output(_FraudReportRaw)
+            raw: _FraudReportRaw = await chain.ainvoke(inputs)
             record_success()
-            return result
+            return _convert(raw)
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
@@ -187,20 +205,13 @@ async def _ainvoke_fraud(inputs: dict) -> FraudReport:
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _summarize_history(records: list[dict], max_records: int = MAX_HISTORY_RECORDS) -> str:
-    """
-    Returns a capped, date-sorted summary of claim history records.
-    Capping prevents context-window overflow when a customer has many claims.
-    """
     if not records:
         return "No claim history found."
-
-    # Most recent first so the LLM sees the most relevant records
     recent = sorted(
         records,
         key=lambda r: r.get("incident_date", ""),
         reverse=True,
     )[:max_records]
-
     lines = [
         f"[{r.get('incident_date', 'N/A')}] {r.get('incident_type', 'Unknown')} | "
         f"Status: {r.get('claim_status', 'Unknown')} | "
@@ -251,7 +262,7 @@ async def arun_fraud_agent(state: dict) -> dict:
         errors.append(f"Fraud agent: Claim_History query failed — {exc}")
         return {**state, "fraud_report": None, "errors": errors}
 
-    # ── Deterministic signals (no LLM needed) ─────────────────────────────────
+    # ── Deterministic signals ──────────────────────────────────────────────────
     denied_flagged_count = sum(
         1 for r in history_records
         if r.get("claim_status") in ("Denied", "Fraud_Flagged")
@@ -273,7 +284,7 @@ async def arun_fraud_agent(state: dict) -> dict:
         risk_rating == "High Risk" and estimated_loss > HIGH_VALUE_LOSS_THRESHOLD
     )
 
-    # ── Signal 3: Staging — async severity scoring (plain text, no schema) ─────
+    # ── Staging signal — plain text severity scoring ───────────────────────────
     staging_flag = False
     severity_score = 0
     try:
@@ -286,7 +297,7 @@ async def arun_fraud_agent(state: dict) -> dict:
         logger.error("claim=%s | Severity scoring failed (non-fatal): %s", claim_id, exc)
         errors.append(f"Fraud agent: staging severity check failed (non-fatal) — {exc}")
 
-    # ── Build deterministic anomalies ─────────────────────────────────────────
+    # ── Build deterministic anomalies ──────────────────────────────────────────
     deterministic_anomalies: list[str] = []
     if frequent_claims_flag:
         deterministic_anomalies.append(
@@ -313,21 +324,23 @@ async def arun_fraud_agent(state: dict) -> dict:
             f"${estimated_loss:,.2f} (threshold: ${HIGH_VALUE_LOSS_THRESHOLD:,})."
         )
 
-    # ── Synthesis LLM call — all floats pre-formatted as strings ──────────────
+    # ── LLM synthesis — pass deterministic flags as "yes"/"no" strings ─────────
+    # Passing the Python bool directly into the prompt is fine for the *input*
+    # (it's just text in the human message). The schema fix only matters for
+    # the *output* fields the model must fill in.
     llm_inputs = {
         "claim_id": claim_id,
         "incident_type": sanitized.get("incident_type", ""),
         "narrative": narrative,
-        # Pre-format floats — avoids LangChain misparse of {:,.2f} in template
         "estimated_loss": f"{estimated_loss:,.2f}",
         "repair_shop": repair_shop,
         "deterministic_anomalies": _format_anomalies(deterministic_anomalies),
         "frequent_threshold": FREQUENT_CLAIM_THRESHOLD,
         "severity_threshold": STAGING_SEVERITY_THRESHOLD,
         "estimate_cap": f"{STAGING_ESTIMATE_CAP:,}",
-        "frequent_claims_flag": frequent_claims_flag,
-        "collusion_flag": collusion_flag,
-        "staging_flag": staging_flag,
+        "frequent_claims_flag": "yes" if frequent_claims_flag else "no",
+        "collusion_flag": "yes" if collusion_flag else "no",
+        "staging_flag": "yes" if staging_flag else "no",
         "history_summary": _summarize_history(history_records),
         "max_history": MAX_HISTORY_RECORDS,
         "risk_rating": risk_rating or "Unknown",
