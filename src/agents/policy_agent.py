@@ -5,10 +5,11 @@ Retrieves the relevant insurance policy via Pinecone RAG, performs semantic
 exclusion matching, checks for aggregate limit breaches, and returns a
 structured PolicyVerdict.
 
-Key performance improvements vs. original:
-  - Async LLM calls via ainvoke
-  - Embedding cache (LRU) for repeated narratives / policy texts
-  - Fast-path: if narrative embedding matches cached result, skip re-embed
+Key fixes vs. previous version:
+  - 400 Bad Request errors now fail immediately (non-retryable).
+  - Format specifiers ({estimated_loss:,.2f}) removed from ChatPromptTemplate
+    strings — values are pre-formatted as strings before being passed in.
+  - Embedding cache (LRU) for repeated narratives / policy texts retained.
 """
 
 import asyncio
@@ -48,7 +49,6 @@ def _cached_encode(text: str) -> tuple:
 
 
 def _encode(text: str):
-    """Return a numpy-compatible list from the LRU cache."""
     import numpy as np
     return np.array(_cached_encode(text))
 
@@ -71,6 +71,8 @@ class PolicyVerdict(BaseModel):
 
 
 # ── Prompt ─────────────────────────────────────────────────────────────────────
+# NOTE: All float values are passed as pre-formatted strings — no :,.2f inside
+# the template string, which causes LangChain to misparse the variable name.
 
 _PROMPT = ChatPromptTemplate.from_messages([
     (
@@ -94,16 +96,16 @@ _PROMPT = ChatPromptTemplate.from_messages([
         "Claim ID        : {claim_id}\n"
         "Incident Type   : {incident_type}\n"
         "Narrative       : {narrative}\n"
-        "Estimated Loss  : ${estimated_loss:,.2f}\n\n"
+        "Estimated Loss  : ${estimated_loss}\n\n"
         "=== Retrieved Policy ===\n"
         "Policy ID               : {policy_id}\n"
         "Coverage Scope          : {coverage_scope}\n"
         "Exclusions              : {exclusions}\n"
-        "Policy Limit            : ${policy_limit:,.2f}\n"
-        "Aggregate Limit         : ${aggregate_limit:,.2f}\n"
-        "Deductible              : ${deductible:,.2f}\n"
-        "Total Historical Payout : ${total_historical_payout:,.2f}\n"
-        "Remaining Limit         : ${remaining_limit:,.2f}\n\n"
+        "Policy Limit            : ${policy_limit}\n"
+        "Aggregate Limit         : ${aggregate_limit}\n"
+        "Deductible              : ${deductible}\n"
+        "Total Historical Payout : ${total_historical_payout}\n"
+        "Remaining Limit         : ${remaining_limit}\n\n"
         "Provide a complete PolicyVerdict.",
     ),
 ])
@@ -123,12 +125,19 @@ async def _ainvoke_llm(inputs: dict) -> PolicyVerdict:
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
+            if "400" in exc_str or "bad request" in exc_str:
+                logger.error(
+                    "policy_agent | 400 Bad Request (non-retryable): %s", exc
+                )
+                raise
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("policy_agent | 429 detected (attempt %d)", attempt + 1)
                 record_429()
                 await asyncio.sleep(2 ** attempt)
             else:
-                logger.warning("policy_agent | LLM error (attempt %d): %s", attempt + 1, exc)
+                logger.warning(
+                    "policy_agent | LLM error (attempt %d): %s", attempt + 1, exc
+                )
                 await asyncio.sleep(2 ** attempt)
     raise last_exc
 
@@ -149,7 +158,8 @@ def _fetch_policy(policy_id: str, narrative_embedding: list) -> Optional[dict]:
         return result["matches"][0]["metadata"]
 
     logger.warning(
-        "Exact policy filter returned no results for %s. Trying unfiltered fallback.", policy_id
+        "Exact policy filter returned no results for %s. Trying unfiltered fallback.",
+        policy_id,
     )
     result = index.query(vector=narrative_embedding, top_k=1, include_metadata=True)
     if result["matches"]:
@@ -158,7 +168,8 @@ def _fetch_policy(policy_id: str, narrative_embedding: list) -> Optional[dict]:
             return meta
         logger.error(
             "Fallback returned policy %s — does not match expected %s. Refusing.",
-            meta.get("policy_id"), policy_id,
+            meta.get("policy_id"),
+            policy_id,
         )
     return None
 
@@ -175,7 +186,10 @@ async def arun_policy_agent(state: dict) -> dict:
     policy_id: str = sanitized.get("policy_id", "")
     estimated_loss: float = float(sanitized.get("estimated_loss", 0))
 
-    logger.info("policy_agent | claim=%s | policy=%s | loss=%.2f", claim_id, policy_id, estimated_loss)
+    logger.info(
+        "policy_agent | claim=%s | policy=%s | loss=%.2f",
+        claim_id, policy_id, estimated_loss,
+    )
 
     if not policy_id:
         errors.append("Policy agent: policy_id missing from sanitized_data.")
@@ -225,7 +239,9 @@ async def arun_policy_agent(state: dict) -> dict:
     try:
         exclusion_vec = await loop.run_in_executor(None, _encode, exclusions_text)
         similarity = float(
-            cosine_similarity(narrative_vec.reshape(1, -1), exclusion_vec.reshape(1, -1))[0][0]
+            cosine_similarity(
+                narrative_vec.reshape(1, -1), exclusion_vec.reshape(1, -1)
+            )[0][0]
         )
         semantic_exclusion_signal = similarity > EXCLUSION_SIMILARITY_THRESHOLD
         logger.debug(
@@ -235,20 +251,24 @@ async def arun_policy_agent(state: dict) -> dict:
     except Exception as exc:
         logger.warning("claim=%s | Exclusion similarity failed: %s", claim_id, exc)
 
-    # ── Async LLM adjudication ─────────────────────────────────────────────────
+    # ── Async LLM adjudication — all floats pre-formatted as strings ───────────
+    policy_limit = float(policy_meta.get("policy_limit", 0))
+    deductible = float(policy_meta.get("deductible", 0))
+
     llm_inputs = {
         "claim_id": claim_id,
         "incident_type": sanitized.get("incident_type", ""),
         "narrative": narrative,
-        "estimated_loss": estimated_loss,
+        # Pre-format every float — avoids LangChain misparse of {:,.2f} in template
+        "estimated_loss": f"{estimated_loss:,.2f}",
         "policy_id": policy_meta.get("policy_id", policy_id),
         "coverage_scope": policy_meta.get("coverage_scope", ""),
         "exclusions": exclusions_text,
-        "policy_limit": float(policy_meta.get("policy_limit", 0)),
-        "aggregate_limit": aggregate_limit,
-        "deductible": float(policy_meta.get("deductible", 0)),
-        "total_historical_payout": total_historical_payout,
-        "remaining_limit": remaining_limit,
+        "policy_limit": f"{policy_limit:,.2f}",
+        "aggregate_limit": f"{aggregate_limit:,.2f}",
+        "deductible": f"{deductible:,.2f}",
+        "total_historical_payout": f"{total_historical_payout:,.2f}",
+        "remaining_limit": f"{remaining_limit:,.2f}",
     }
 
     try:
@@ -258,7 +278,9 @@ async def arun_policy_agent(state: dict) -> dict:
             claim_id, verdict.incident_covered, verdict.exclusion_triggered,
         )
     except Exception as exc:
-        errors.append(f"Policy agent LLM failed after {LLM_MAX_RETRIES} retries: {exc}")
+        errors.append(
+            f"Policy agent LLM failed after {LLM_MAX_RETRIES} retries: {exc}"
+        )
         return {**state, "policy_verdict": None, "errors": errors}
 
     # ── Post-LLM deterministic overrides ──────────────────────────────────────
@@ -267,7 +289,9 @@ async def arun_policy_agent(state: dict) -> dict:
             "claim=%s | LLM exclusion suppressed (similarity %.4f < threshold %.2f).",
             claim_id, similarity, EXCLUSION_SIMILARITY_THRESHOLD,
         )
-        verdict = verdict.model_copy(update={"exclusion_triggered": False, "exclusion_reason": ""})
+        verdict = verdict.model_copy(
+            update={"exclusion_triggered": False, "exclusion_reason": ""}
+        )
 
     overrides: dict = {"remaining_limit": remaining_limit}
     if aggregate_breach or verdict.exclusion_triggered:
@@ -281,7 +305,8 @@ async def arun_policy_agent(state: dict) -> dict:
     elapsed = time.perf_counter() - t_start
     logger.info(
         "policy_agent | claim=%s | done in %.2fs | covered=%s | exclusion=%s | breach=%s",
-        claim_id, elapsed, verdict.incident_covered, verdict.exclusion_triggered, aggregate_breach,
+        claim_id, elapsed, verdict.incident_covered,
+        verdict.exclusion_triggered, aggregate_breach,
     )
 
     return {**state, "policy_verdict": verdict.model_dump(), "errors": errors}

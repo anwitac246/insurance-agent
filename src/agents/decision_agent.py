@@ -2,6 +2,12 @@
 decision_agent.py
 -----------------
 Final claims adjudicator — async-first.
+
+Key fixes vs. previous version:
+  - 400 Bad Request errors now fail immediately (non-retryable) instead of
+    retrying with exponential backoff.
+  - Float values passed to the prompt are pre-formatted as strings to avoid
+    LangChain template-engine misparsing format specifiers.
 """
 
 from __future__ import annotations
@@ -34,6 +40,8 @@ class DecisionOutput(BaseModel):
     )
 
 
+# NOTE: No Python format specifiers inside the template — floats are
+# pre-formatted before being passed as inputs.
 _prompt = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -72,12 +80,19 @@ async def _ainvoke(inputs: dict) -> DecisionOutput:
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
+            if "400" in exc_str or "bad request" in exc_str:
+                logger.error(
+                    "decision_agent | 400 Bad Request (non-retryable): %s", exc
+                )
+                raise
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("decision_agent | 429 detected (attempt %d)", attempt + 1)
                 record_429()
                 await asyncio.sleep(2 ** attempt)
             else:
-                logger.warning("decision_agent | LLM error (attempt %d): %s", attempt + 1, exc)
+                logger.warning(
+                    "decision_agent | LLM error (attempt %d): %s", attempt + 1, exc
+                )
                 await asyncio.sleep(2 ** attempt)
     raise last_exc
 
@@ -89,10 +104,13 @@ async def arun_decision_agent(state: dict) -> dict:
     policy_verdict = state.get("policy_verdict", {})
     fraud_report = state.get("fraud_report", {})
 
+    estimated_loss = float(sanitized.get("estimated_loss", 0))
+
     try:
         result: DecisionOutput = await _ainvoke({
             "claim_id": state.get("claim_id"),
-            "estimated_loss": sanitized.get("estimated_loss", 0),
+            # Pre-format float — avoids LangChain misparse of {:,.2f} in template
+            "estimated_loss": f"{estimated_loss:,.2f}",
             "policy_verdict": str(policy_verdict),
             "fraud_report": str(fraud_report),
             "errors": errors if errors else "None",

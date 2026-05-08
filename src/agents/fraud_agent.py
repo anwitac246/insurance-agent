@@ -3,11 +3,16 @@ fraud_agent.py
 --------------
 Five-signal fraud detection engine — async-first.
 
-Key performance improvements vs. original:
-  - Async LLM calls via ainvoke
-  - Severity scoring uses llama-3.1-8b-instant (fast model) instead of 70B —
-    it's a simple 1-10 integer classification that doesn't need the large model
-  - DB query runs before LLM calls to avoid blocking
+Key fixes vs. previous version:
+  - 400 Bad Request errors now fail immediately (non-retryable) instead of
+    retrying 3 times with exponential backoff.
+  - Format specifiers ({estimated_loss:,.2f}) removed from ChatPromptTemplate
+    strings — values are pre-formatted as strings before being passed in, to
+    avoid LangChain template-engine misparsing the colon syntax.
+  - Severity scoring no longer uses .with_structured_output() for a single
+    integer — plain text parsing is more reliable and avoids JSON schema
+    failures on Groq free tier.
+  - Claim history is capped at MAX_HISTORY_RECORDS to prevent context overflow.
 """
 
 import asyncio
@@ -37,6 +42,7 @@ STAGING_SEVERITY_THRESHOLD = 7
 STAGING_ESTIMATE_CAP = 1_000
 HIGH_VALUE_LOSS_THRESHOLD = 10_000
 LLM_MAX_RETRIES = 3
+MAX_HISTORY_RECORDS = 10          # cap sent to LLM to avoid context overflow
 
 logger = logging.getLogger(__name__)
 
@@ -58,12 +64,10 @@ class FraudReport(BaseModel):
     reasoning: str
 
 
-class _SeverityScore(BaseModel):
-    severity: int
-
-
 # ── Prompts ────────────────────────────────────────────────────────────────────
 
+# NOTE: No Python format specifiers (e.g. :,.2f) inside the template strings.
+# All float values are pre-formatted to strings before being passed as inputs.
 _SEVERITY_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -71,7 +75,7 @@ _SEVERITY_PROMPT = ChatPromptTemplate.from_messages([
         "Rate the physical severity described in this incident narrative on a scale of "
         "1 (trivial scratch) to 10 (catastrophic multi-vehicle disaster with casualties). "
         "Consider: number of vehicles, emergency services involvement, described damage extent. "
-        "Return only the integer score — no explanation.",
+        "Reply with ONLY a single integer between 1 and 10. No explanation, no punctuation.",
     ),
     ("human", "{narrative}"),
 ])
@@ -92,15 +96,15 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
         "Claim ID      : {claim_id}\n"
         "Incident Type : {incident_type}\n"
         "Narrative     : {narrative}\n"
-        "Estimated Loss: ${estimated_loss:,.2f}\n"
+        "Estimated Loss: ${estimated_loss}\n"
         "Repair Shop   : {repair_shop}\n\n"
         "=== Pre-computed Deterministic Anomalies ===\n"
         "{deterministic_anomalies}\n\n"
         "=== Signal Summary ===\n"
-        "Frequent Claims Flag (≥{frequent_threshold} denied/flagged): {frequent_claims_flag}\n"
-        "Collusion Shop Flag                                        : {collusion_flag}\n"
-        "Staging Flag (severity≥{severity_threshold}, est<${estimate_cap})  : {staging_flag}\n\n"
-        "=== Full Claim History ===\n"
+        "Frequent Claims Flag (>= {frequent_threshold} denied/flagged): {frequent_claims_flag}\n"
+        "Collusion Shop Flag                                           : {collusion_flag}\n"
+        "Staging Flag (severity>={severity_threshold}, est<${estimate_cap})  : {staging_flag}\n\n"
+        "=== Recent Claim History (last {max_history} records) ===\n"
         "{history_summary}\n\n"
         "=== Customer Profile ===\n"
         "Risk Rating: {risk_rating}\n"
@@ -112,25 +116,41 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
 
 # ── Async LLM invocations ──────────────────────────────────────────────────────
 
-async def _ainvoke_severity(inputs: dict) -> _SeverityScore:
-    """Uses the fast 8B model — simple integer classification doesn't need 70B."""
+async def _ainvoke_severity(inputs: dict) -> int:
+    """
+    Uses the fast 8B model with plain text output instead of structured output.
+    Parsing a single integer from free text is far more reliable than forcing
+    a JSON schema on Groq's free tier for a trivial classification task.
+    Returns an integer in [1, 10]; defaults to 5 on parse failure.
+    """
     last_exc = None
     for attempt in range(LLM_MAX_RETRIES):
         try:
-            llm = get_async_fast_llm()   # ← fast model swap
-            chain = _SEVERITY_PROMPT | llm.with_structured_output(_SeverityScore)
+            llm = get_async_fast_llm()
+            chain = _SEVERITY_PROMPT | llm   # no .with_structured_output()
             result = await chain.ainvoke(inputs)
+            text = result.content.strip()
+            # Extract the first run of digits from the response
+            digits = "".join(ch for ch in text.split()[0] if ch.isdigit())
+            score = int(digits) if digits else 5
             record_success()
-            return result
+            return max(1, min(10, score))
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
+            if "400" in exc_str or "bad request" in exc_str:
+                logger.error(
+                    "fraud_agent | severity | 400 Bad Request (non-retryable): %s", exc
+                )
+                raise
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("fraud_agent | severity 429 (attempt %d)", attempt + 1)
                 record_429()
                 await asyncio.sleep(2 ** attempt)
             else:
-                logger.warning("fraud_agent | severity LLM error (attempt %d): %s", attempt + 1, exc)
+                logger.warning(
+                    "fraud_agent | severity LLM error (attempt %d): %s", attempt + 1, exc
+                )
                 await asyncio.sleep(2 ** attempt)
     raise last_exc
 
@@ -147,34 +167,59 @@ async def _ainvoke_fraud(inputs: dict) -> FraudReport:
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
+            if "400" in exc_str or "bad request" in exc_str:
+                logger.error(
+                    "fraud_agent | synthesis | 400 Bad Request (non-retryable): %s", exc
+                )
+                raise
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("fraud_agent | synthesis 429 (attempt %d)", attempt + 1)
                 record_429()
                 await asyncio.sleep(2 ** attempt)
             else:
-                logger.warning("fraud_agent | synthesis LLM error (attempt %d): %s", attempt + 1, exc)
+                logger.warning(
+                    "fraud_agent | synthesis LLM error (attempt %d): %s", attempt + 1, exc
+                )
                 await asyncio.sleep(2 ** attempt)
     raise last_exc
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _summarize_history(records: list[dict]) -> str:
+def _summarize_history(records: list[dict], max_records: int = MAX_HISTORY_RECORDS) -> str:
+    """
+    Returns a capped, date-sorted summary of claim history records.
+    Capping prevents context-window overflow when a customer has many claims.
+    """
     if not records:
         return "No claim history found."
+
+    # Most recent first so the LLM sees the most relevant records
+    recent = sorted(
+        records,
+        key=lambda r: r.get("incident_date", ""),
+        reverse=True,
+    )[:max_records]
+
     lines = [
         f"[{r.get('incident_date', 'N/A')}] {r.get('incident_type', 'Unknown')} | "
         f"Status: {r.get('claim_status', 'Unknown')} | "
         f"Payout: ${r.get('payout_amount', 0):,.2f}"
-        for r in records
+        for r in recent
     ]
-    return "\n".join(lines)
+    total = len(records)
+    header = (
+        f"(Showing {len(recent)} of {total} total records)"
+        if total > max_records
+        else f"(All {total} records)"
+    )
+    return header + "\n" + "\n".join(lines)
 
 
 def _format_anomalies(anomalies: list[str]) -> str:
     if not anomalies:
         return "None detected."
-    return "\n".join(f"  • {a}" for a in anomalies)
+    return "\n".join(f"  - {a}" for a in anomalies)
 
 
 # ── Async main ─────────────────────────────────────────────────────────────────
@@ -214,7 +259,9 @@ async def arun_fraud_agent(state: dict) -> dict:
     frequent_claims_flag = denied_flagged_count >= FREQUENT_CLAIM_THRESHOLD
     collusion_flag = COLLUSION_SHOP.lower() in repair_shop.lower()
 
-    cutoff_date = (datetime.now() - timedelta(days=VELOCITY_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    cutoff_date = (
+        datetime.now() - timedelta(days=VELOCITY_WINDOW_DAYS)
+    ).strftime("%Y-%m-%d")
     recent_claim_count = sum(
         1 for r in history_records
         if r.get("incident_date", "") >= cutoff_date
@@ -222,15 +269,19 @@ async def arun_fraud_agent(state: dict) -> dict:
 
     risk_rating: str = customer_profile.get("risk_rating", "")
     ncd_tier: float = float(customer_profile.get("ncd_tier", 0.0))
-    high_risk_high_value = risk_rating == "High Risk" and estimated_loss > HIGH_VALUE_LOSS_THRESHOLD
+    high_risk_high_value = (
+        risk_rating == "High Risk" and estimated_loss > HIGH_VALUE_LOSS_THRESHOLD
+    )
 
-    # ── Signal 3: Staging — async severity scoring with fast model ─────────────
+    # ── Signal 3: Staging — async severity scoring (plain text, no schema) ─────
     staging_flag = False
     severity_score = 0
     try:
-        sev_result = await _ainvoke_severity({"narrative": narrative})
-        severity_score = max(1, min(10, sev_result.severity))
-        staging_flag = severity_score >= STAGING_SEVERITY_THRESHOLD and estimated_loss < STAGING_ESTIMATE_CAP
+        severity_score = await _ainvoke_severity({"narrative": narrative})
+        staging_flag = (
+            severity_score >= STAGING_SEVERITY_THRESHOLD
+            and estimated_loss < STAGING_ESTIMATE_CAP
+        )
     except Exception as exc:
         logger.error("claim=%s | Severity scoring failed (non-fatal): %s", claim_id, exc)
         errors.append(f"Fraud agent: staging severity check failed (non-fatal) — {exc}")
@@ -262,21 +313,23 @@ async def arun_fraud_agent(state: dict) -> dict:
             f"${estimated_loss:,.2f} (threshold: ${HIGH_VALUE_LOSS_THRESHOLD:,})."
         )
 
-    # ── Synthesis LLM call (70B model) ─────────────────────────────────────────
+    # ── Synthesis LLM call — all floats pre-formatted as strings ──────────────
     llm_inputs = {
         "claim_id": claim_id,
         "incident_type": sanitized.get("incident_type", ""),
         "narrative": narrative,
-        "estimated_loss": estimated_loss,
+        # Pre-format floats — avoids LangChain misparse of {:,.2f} in template
+        "estimated_loss": f"{estimated_loss:,.2f}",
         "repair_shop": repair_shop,
         "deterministic_anomalies": _format_anomalies(deterministic_anomalies),
         "frequent_threshold": FREQUENT_CLAIM_THRESHOLD,
         "severity_threshold": STAGING_SEVERITY_THRESHOLD,
-        "estimate_cap": STAGING_ESTIMATE_CAP,
+        "estimate_cap": f"{STAGING_ESTIMATE_CAP:,}",
         "frequent_claims_flag": frequent_claims_flag,
         "collusion_flag": collusion_flag,
         "staging_flag": staging_flag,
         "history_summary": _summarize_history(history_records),
+        "max_history": MAX_HISTORY_RECORDS,
         "risk_rating": risk_rating or "Unknown",
         "ncd_tier": ncd_tier,
     }

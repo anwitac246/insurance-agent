@@ -7,7 +7,7 @@ Run
 ---
     python -m evals.run_evals [--k 3] [--no-chaos] [--no-llm-judge]
                               [--output-dir evals/results] [--claims N]
-                              [--claim-ids id1 id2 ...] [--delay 2]
+                              [--claim-ids id1 id2 ...] [--delay 4]
 
 Arguments
 ---------
@@ -17,7 +17,11 @@ Arguments
 --output-dir         Directory for JSON report and PNG chart (default: evals/results).
 --claims N           Process only the first N claims (default: all).
 --claim-ids          Explicit list of claim IDs to process.
---delay              Seconds to sleep between claims to avoid Groq 429s (default: 2).
+--delay              Seconds to sleep between claims (default: 4).
+                     NOTE: The parallel_analysis node fires policy_agent AND fraud_agent
+                     simultaneously, so each claim consumes ~2x the RPM budget. The
+                     default of 4s gives enough headroom on Groq free tier (30 RPM).
+                     Set to 0 to disable throttling entirely (risky on free tier).
 
 Exit codes
 ----------
@@ -102,8 +106,6 @@ def _extract_token_usage(result: dict) -> dict[str, int]:
     """
     usage = result.get("token_usage") or {}
     if not usage:
-        # Graceful degradation — token counting requires LangChain callbacks
-        # which the current MAS doesn't wire up by default.
         return {
             "verification_agent": 0,
             "policy_agent": 0,
@@ -167,11 +169,13 @@ def _run_llm_judge(
                     f"Claim: {gt.incident_type}, Loss: ${gt.estimated_loss:,.2f}, "
                     f"Scenario: {gt.fraud_scenario}. "
                     f"Policy: remaining_limit={pv.get('remaining_limit')}, "
-                    f"exclusions={pv.get('exclusions', '')[:200]}."
+                    f"exclusions={str(pv.get('exclusions', ''))[:200]}."
                 )
                 h_report = h_judge.evaluate(facts=facts, reasoning=reasoning)
                 hallucination_rates.append(h_report.hallucination_rate)
-                logger.debug("claim=%s | hallucination_rate=%.3f", cid, h_report.hallucination_rate)
+                logger.debug(
+                    "claim=%s | hallucination_rate=%.3f", cid, h_report.hallucination_rate
+                )
         except Exception as exc:
             judge_errors.append(f"Hallucination failed for {cid}: {exc}")
             logger.warning("Hallucination judge error for %s: %s", cid, exc)
@@ -204,7 +208,7 @@ def run_evaluation(
     output_dir: str = "evals/results",
     max_claims: int | None = None,
     explicit_claim_ids: list[str] | None = None,
-    inter_claim_delay: float = 2.0,
+    inter_claim_delay: float = 4.0,
 ) -> dict:
     """
     Full evaluation pipeline.
@@ -213,8 +217,14 @@ def run_evaluation(
     ----------
     inter_claim_delay : float
         Seconds to sleep between consecutive claim calls to avoid Groq 429s.
-        Set to 0 to disable. Default is 2.0s which comfortably stays under
-        the free-tier RPM limit across all three LLM calls per claim.
+
+        IMPORTANT: The parallel_analysis node fires policy_agent AND fraud_agent
+        at the same time, so each claim effectively consumes 2 RPM slots
+        concurrently. With Groq free tier at ~30 RPM, a 4s delay keeps you
+        safely under the limit. Default changed from 2s → 4s for this reason.
+
+        Set to 0 to disable throttling (only safe if you have a paid Groq key
+        or are using GROQ_API_KEYS rotation with multiple keys).
 
     Returns the assembled report dict (also saved to disk as JSON + PNG).
     """
@@ -224,7 +234,10 @@ def run_evaluation(
 
     logger.info("═" * 60)
     logger.info("  Car Insurance MAS — Evaluation Run  [%s]", run_id)
-    logger.info("  K=%d  chaos=%s  llm_judge=%s  delay=%.1fs", k, run_chaos, run_llm_judge, inter_claim_delay)
+    logger.info(
+        "  K=%d  chaos=%s  llm_judge=%s  delay=%.1fs",
+        k, run_chaos, run_llm_judge, inter_claim_delay,
+    )
     logger.info("═" * 60)
 
     # ── Load ground truth ──────────────────────────────────────────────────────
@@ -235,9 +248,10 @@ def run_evaluation(
         logger.error("Ground truth load failed: %s", exc)
         sys.exit(1)
 
-    # Optionally limit to a subset
     if explicit_claim_ids:
-        ground_truth = {cid: gt for cid, gt in ground_truth.items() if cid in explicit_claim_ids}
+        ground_truth = {
+            cid: gt for cid, gt in ground_truth.items() if cid in explicit_claim_ids
+        }
         logger.info("Filtered to %d explicit claim IDs.", len(ground_truth))
     elif max_claims:
         items = list(ground_truth.items())[:max_claims]
@@ -259,19 +273,22 @@ def run_evaluation(
         results.append(result)
         timing_records.append({"claim_id": cid, "total_s": elapsed, "per_agent": {}})
         token_records.append({"claim_id": cid, "per_agent": _extract_token_usage(result)})
-        # Throttle between claims to respect Groq free-tier RPM limits
+
+        # Throttle between claims.
+        # Each claim fires 2 concurrent LLM requests (parallel_analysis) so the
+        # effective RPM spend is double what a sequential pipeline would use.
         if inter_claim_delay > 0 and i < len(claim_ids):
             logger.debug("Sleeping %.1fs before next claim…", inter_claim_delay)
             time.sleep(inter_claim_delay)
 
     # ── Core metrics ───────────────────────────────────────────────────────────
     logger.info("Computing core metrics…")
-    acc_metrics    = decision_accuracy(results, ground_truth)
-    fraud_metrics  = fraud_precision_recall_f1(results, ground_truth)
-    stp_metrics    = stp_rate(results)
-    completeness   = step_completeness(results)
-    lat_metrics    = latency_stats(timing_records)
-    tok_metrics    = token_efficiency(token_records)
+    acc_metrics   = decision_accuracy(results, ground_truth)
+    fraud_metrics = fraud_precision_recall_f1(results, ground_truth)
+    stp_metrics   = stp_rate(results)
+    completeness  = step_completeness(results)
+    lat_metrics   = latency_stats(timing_records)
+    tok_metrics   = token_efficiency(token_records)
 
     logger.info(
         "Core metrics → accuracy=%.2f%%  F1=%.2f%%  STP=%.2f%%",
@@ -327,10 +344,13 @@ def run_evaluation(
             chaos_report = harness.run_corruption_sweep(
                 ground_truth=ground_truth,
                 corruption_levels=[0.0, 0.10, 0.20, 0.30],
-                fields_to_corrupt=["PolicyNumber", "ClaimantName", "TotalEstimate", "LossDate"],
+                fields_to_corrupt=[
+                    "PolicyNumber", "ClaimantName", "TotalEstimate", "LossDate"
+                ],
             )
-            # Strip per_level_details from the summary report (too verbose)
-            chaos_summary = {k: v for k, v in chaos_report.items() if k != "per_level_details"}
+            chaos_summary = {
+                k: v for k, v in chaos_report.items() if k != "per_level_details"
+            }
         except Exception as exc:
             logger.error("Chaos testing failed: %s", exc)
             chaos_summary = {"error": str(exc)}
@@ -366,15 +386,15 @@ def run_evaluation(
     except Exception as exc:
         logger.warning("Chart generation failed (non-fatal): %s", exc)
 
-    # ── Print summary ──────────────────────────────────────────────────────────
     _print_summary(report)
 
     logger.info("Results saved to %s", out_dir)
     return report
 
 
-def _scenario_breakdown(results: list[dict], ground_truth: dict[str, GTRecord]) -> dict:
-    """Per-scenario accuracy breakdown — useful for identifying weak spots."""
+def _scenario_breakdown(
+    results: list[dict], ground_truth: dict[str, GTRecord]
+) -> dict:
     from collections import defaultdict
     scenario_stats: dict[str, dict] = defaultdict(lambda: {"correct": 0, "total": 0})
 
@@ -412,16 +432,20 @@ def _print_summary(report: dict) -> None:
     fm = report["fraud_metrics"]
     print(f"  Fraud Precision      : {fm['precision']*100:.1f}%")
     print(f"  Fraud Recall         : {fm['recall']*100:.1f}%")
-    print(f"  Fraud F1             : {fm['f1']*100:.1f}%  (TP={fm['tp']} FP={fm['fp']} FN={fm['fn']})")
+    print(f"  Fraud F1             : {fm['f1']*100:.1f}%  "
+          f"(TP={fm['tp']} FP={fm['fp']} FN={fm['fn']})")
     stp = report["stp"]
-    print(f"  STP Rate             : {stp['stp_rate']*100:.1f}%  ({stp['straight_through']}/{stp['total']})")
+    print(f"  STP Rate             : {stp['stp_rate']*100:.1f}%  "
+          f"({stp['straight_through']}/{stp['total']})")
     cons = report["consistency"]
-    print(f"  Consistency (K={cons.get('k_runs',1)})    : {cons.get('mean_consistency',1.0)*100:.1f}%")
+    print(f"  Consistency (K={cons.get('k_runs',1)})    : "
+          f"{cons.get('mean_consistency',1.0)*100:.1f}%")
     sc = report["step_completeness"]
     print(f"  Step Completeness    : {sc.get('mean_completeness',0)*100:.1f}%")
     lat = report["latency"]
     if lat:
-        print(f"  Mean Latency         : {lat.get('mean_latency_s',0):.2f}s  (p95={lat.get('p95_latency_s',0):.2f}s)")
+        print(f"  Mean Latency         : {lat.get('mean_latency_s',0):.2f}s  "
+              f"(p95={lat.get('p95_latency_s',0):.2f}s)")
     jm = report.get("llm_judge", {})
     g = jm.get("groundedness", {})
     h = jm.get("hallucination", {})
@@ -431,13 +455,17 @@ def _print_summary(report: dict) -> None:
         print(f"  Hallucination Rate   : {h['mean_rate']*100:.1f}%")
     chaos = report.get("chaos", {})
     if chaos.get("degradation") is not None:
-        print(f"  Chaos Degradation    : {chaos['degradation']*100:.1f}pp  (0→30% corruption)")
+        print(f"  Chaos Degradation    : {chaos['degradation']*100:.1f}pp  "
+              f"(0→30% corruption)")
     print(f"{'═' * 55}\n")
     print("  Per-Scenario Accuracy:")
     for scenario, stats in sorted(report.get("scenario_breakdown", {}).items()):
         bar_len = int(stats["accuracy"] * 20)
         bar = "█" * bar_len + "░" * (20 - bar_len)
-        print(f"    {scenario:<22} {bar}  {stats['accuracy']*100:.0f}%  ({stats['correct']}/{stats['total']})")
+        print(
+            f"    {scenario:<22} {bar}  "
+            f"{stats['accuracy']*100:.0f}%  ({stats['correct']}/{stats['total']})"
+        )
     print()
 
 
@@ -445,15 +473,37 @@ def _print_summary(report: dict) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Car Insurance MAS Evaluation Pipeline")
-    p.add_argument("--k", type=int, default=3, help="Consistency runs per claim (default 3)")
-    p.add_argument("--no-chaos", action="store_true", help="Skip chaos/corruption sweep")
-    p.add_argument("--no-llm-judge", action="store_true", help="Skip LLM-as-Judge scoring")
-    p.add_argument("--output-dir", default="evals/results", help="Output directory for reports")
-    p.add_argument("--claims", type=int, default=None, help="Process first N claims only")
-    p.add_argument("--claim-ids", nargs="+", default=None, help="Explicit claim IDs to process")
     p.add_argument(
-        "--delay", type=float, default=2.0,
-        help="Seconds to sleep between claims to avoid Groq 429 rate limits (default 2.0, set 0 to disable)",
+        "--k", type=int, default=3,
+        help="Consistency runs per claim (default 3)",
+    )
+    p.add_argument(
+        "--no-chaos", action="store_true",
+        help="Skip chaos/corruption sweep",
+    )
+    p.add_argument(
+        "--no-llm-judge", action="store_true",
+        help="Skip LLM-as-Judge scoring",
+    )
+    p.add_argument(
+        "--output-dir", default="evals/results",
+        help="Output directory for reports",
+    )
+    p.add_argument(
+        "--claims", type=int, default=None,
+        help="Process first N claims only",
+    )
+    p.add_argument(
+        "--claim-ids", nargs="+", default=None,
+        help="Explicit claim IDs to process",
+    )
+    p.add_argument(
+        "--delay", type=float, default=4.0,
+        help=(
+            "Seconds to sleep between claims (default 4.0). "
+            "parallel_analysis fires 2 concurrent LLM calls per claim, "
+            "doubling effective RPM. Increase if you hit 429s; set 0 to disable."
+        ),
     )
     return p.parse_args()
 

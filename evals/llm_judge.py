@@ -2,6 +2,11 @@
 llm_judge.py
 ------------
 LLM-as-Judge utilities using the centralized Groq key rotation manager.
+
+Key fixes vs. previous version:
+  - 400 Bad Request errors now fail immediately (non-retryable).
+  - Input token limits tightened (policy_text: 1500, facts/steps: 1000 each)
+    to stay well within Groq free-tier context limits.
 """
 
 from __future__ import annotations
@@ -19,6 +24,11 @@ from src.tools.groq_client import get_llm, record_429, record_success
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
+
+# Tightened from 3000/2000 — keeps requests well within Groq context limits
+POLICY_TEXT_LIMIT = 1_500
+FACTS_LIMIT = 1_000
+STEPS_LIMIT = 1_000
 
 
 # ── Groundedness Judge ─────────────────────────────────────────────────────────
@@ -69,12 +79,21 @@ class GroundednessJudge:
             except Exception as exc:
                 last_exc = exc
                 exc_str = str(exc).lower()
+                if "400" in exc_str or "bad request" in exc_str:
+                    logger.error(
+                        "groundedness_judge | 400 Bad Request (non-retryable): %s", exc
+                    )
+                    raise
                 if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
-                    logger.warning("groundedness_judge | 429 (attempt %d)", attempt + 1)
+                    logger.warning(
+                        "groundedness_judge | 429 (attempt %d)", attempt + 1
+                    )
                     record_429()
                     time.sleep(2 ** attempt)
                 else:
-                    logger.warning("groundedness_judge | error (attempt %d): %s", attempt + 1, exc)
+                    logger.warning(
+                        "groundedness_judge | error (attempt %d): %s", attempt + 1, exc
+                    )
                     time.sleep(2 ** attempt)
         raise last_exc
 
@@ -86,7 +105,8 @@ class GroundednessJudge:
             f"reasoning={verdict.get('coverage_reasoning', '')}"
         )
         return self._invoke({
-            "policy_text": policy_text[:3000],
+            # Tightened limit to stay within free-tier context window
+            "policy_text": policy_text[:POLICY_TEXT_LIMIT],
             "verdict_text": verdict_text,
         })
 
@@ -144,12 +164,21 @@ class HallucinationJudge:
             except Exception as exc:
                 last_exc = exc
                 exc_str = str(exc).lower()
+                if "400" in exc_str or "bad request" in exc_str:
+                    logger.error(
+                        "hallucination_judge | 400 Bad Request (non-retryable): %s", exc
+                    )
+                    raise
                 if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
-                    logger.warning("hallucination_judge | 429 (attempt %d)", attempt + 1)
+                    logger.warning(
+                        "hallucination_judge | 429 (attempt %d)", attempt + 1
+                    )
                     record_429()
                     time.sleep(2 ** attempt)
                 else:
-                    logger.warning("hallucination_judge | error (attempt %d): %s", attempt + 1, exc)
+                    logger.warning(
+                        "hallucination_judge | error (attempt %d): %s", attempt + 1, exc
+                    )
                     time.sleep(2 ** attempt)
         raise last_exc
 
@@ -162,6 +191,7 @@ class HallucinationJudge:
         steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(raw_steps))
 
         return self._invoke({
-            "facts": facts[:2000],
-            "steps": steps_text[:2000],
+            # Tightened limits to stay within free-tier context window
+            "facts": facts[:FACTS_LIMIT],
+            "steps": steps_text[:STEPS_LIMIT],
         })
