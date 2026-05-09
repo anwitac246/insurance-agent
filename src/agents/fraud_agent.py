@@ -3,23 +3,21 @@ fraud_agent.py
 --------------
 Five-signal fraud detection engine — async-first.
 
-Fixes applied:
-  - _FraudReportRaw Field descriptions now explicitly forbid True/False/true/false.
-  - System prompt includes a CRITICAL format block with correct/wrong examples.
-  - _ainvoke_fraud uses a two-step fallback: structured output for safe fields,
-    plain-text regex parsing for the three boolean flag fields. This eliminates
-    tool_use_failed 400 errors from Groq when the model outputs JSON booleans.
-  - All post-LLM deterministic overrides still apply to the final FraudReport.
-  - 400 Bad Request errors fail immediately (non-retryable).
+Performance fix (single LLM call for synthesis)
+-------------------------------------------------
+Previously used a two-step approach for the synthesis call: one structured-output
+call (booleans excluded) + one plain-text call to parse flag values. That produced
+3 LLM calls per claim (severity + 2 synthesis). Now uses severity (1 call) +
+synthesis (1 call) = 2 total. Boolean flags typed as `str`; Pydantic v2 coerces
+True/False/"yes"/"no" transparently, eliminating Groq 400 errors.
 """
 
 import asyncio
 import logging
-import re
 import time
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Literal, Optional
+from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
@@ -54,29 +52,22 @@ class RiskLevel(str, Enum):
     HIGH = "High"
 
 
-# Internal schema sent to LLM — boolean flags removed entirely to avoid
-# tool_use_failed 400 errors. Flags are parsed from plain text instead.
-class _FraudReportNoBools(BaseModel):
-    """Structured output schema with boolean flags removed to avoid Groq 400s."""
-    risk_score: RiskLevel
-    anomalies: list[str]
-    reasoning: str
+def _parse_bool(val) -> bool:
+    return str(val).lower().strip() in ("yes", "true", "1")
 
 
-# Kept for reference / legacy — not used for LLM output any more.
+# Single schema — boolean flags typed as `str` so Pydantic v2 coerces any JSON
+# value (True, False, "yes", "no") without raising a validation error.
 class _FraudReportRaw(BaseModel):
     risk_score: RiskLevel
-    frequent_claims_flag: Literal["yes", "no"] = Field(
-        description='Must be the exact string "yes" or the exact string "no". '
-                    'NEVER output True, False, true, or false for this field.'
+    frequent_claims_flag: str = Field(
+        description='Output "yes" if the flag is active, "no" otherwise.'
     )
-    collusion_flag: Literal["yes", "no"] = Field(
-        description='Must be the exact string "yes" or the exact string "no". '
-                    'NEVER output True, False, true, or false for this field.'
+    collusion_flag: str = Field(
+        description='Output "yes" if the flag is active, "no" otherwise.'
     )
-    staging_flag: Literal["yes", "no"] = Field(
-        description='Must be the exact string "yes" or the exact string "no". '
-                    'NEVER output True, False, true, or false for this field.'
+    staging_flag: str = Field(
+        description='Output "yes" if the flag is active, "no" otherwise.'
     )
     anomalies: list[str]
     reasoning: str
@@ -90,24 +81,6 @@ class FraudReport(BaseModel):
     staging_flag: bool
     anomalies: list[str]
     reasoning: str
-
-
-# ── Flag regex parser ──────────────────────────────────────────────────────────
-
-_FLAG_RE = re.compile(
-    r'(frequent_claims_flag|collusion_flag|staging_flag)\s*[=:"\s]+\s*(yes|no|true|false)',
-    re.IGNORECASE,
-)
-
-
-def _parse_flags(text: str) -> dict[str, bool]:
-    """Extract yes/no/true/false flag values from plain LLM text output."""
-    flags: dict[str, bool] = {}
-    for match in _FLAG_RE.finditer(text):
-        key = match.group(1).lower()
-        val = match.group(2).lower() in ("yes", "true")
-        flags[key] = val
-    return flags
 
 
 # ── Prompts ────────────────────────────────────────────────────────────────────
@@ -131,16 +104,9 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
         "Synthesize the provided signals and claim context into a final fraud risk assessment. "
         "Reason step by step through every signal before assigning a RiskLevel.\n\n"
         "IMPORTANT: Your anomalies list MUST include every item from the "
-        "'Pre-computed Deterministic Anomalies' section, verbatim, plus any additional "
-        "ones you identify. You may not drop or omit any pre-computed anomaly.\n\n"
-        "CRITICAL — OUTPUT FORMAT RULES:\n"
-        "  frequent_claims_flag, collusion_flag, and staging_flag MUST be the exact\n"
-        '  string "yes" or the exact string "no".\n'
-        "  NEVER output True, False, true, false, or any boolean value for these fields.\n"
-        '  Correct:   frequent_claims_flag: "yes"\n'
-        '  Correct:   collusion_flag: "no"\n'
-        "  WRONG:     staging_flag: False    <- this will cause an API error\n"
-        "  WRONG:     staging_flag: true     <- this will cause an API error\n",
+        "'Pre-computed Deterministic Anomalies' section, verbatim.\n\n"
+        "For frequent_claims_flag, collusion_flag, and staging_flag output the "
+        "string 'yes' or 'no' based on the pre-computed signals provided.",
     ),
     (
         "human",
@@ -161,8 +127,8 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
         "=== Customer Profile ===\n"
         "Risk Rating: {risk_rating}\n"
         "NCD Tier   : {ncd_tier}\n\n"
-        "Produce a complete FraudReport with risk_score, anomalies, and reasoning. "
-        'Also include frequent_claims_flag, collusion_flag, and staging_flag as "yes" or "no".',
+        "Produce a complete FraudReport with risk_score, anomalies, reasoning, "
+        "and the three flag fields as 'yes' or 'no'.",
     ),
 ])
 
@@ -185,96 +151,49 @@ async def _ainvoke_severity(inputs: dict) -> int:
             last_exc = exc
             exc_str = str(exc).lower()
             if "400" in exc_str or "bad request" in exc_str:
-                logger.error(
-                    "fraud_agent | severity | 400 Bad Request (non-retryable): %s", exc
-                )
+                logger.error("fraud_agent | severity | 400 Bad Request (non-retryable): %s", exc)
                 raise
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("fraud_agent | severity 429 (attempt %d)", attempt + 1)
                 record_429()
                 await asyncio.sleep(2 ** attempt)
             else:
-                logger.warning(
-                    "fraud_agent | severity LLM error (attempt %d): %s", attempt + 1, exc
-                )
+                logger.warning("fraud_agent | severity LLM error (attempt %d): %s", attempt + 1, exc)
                 await asyncio.sleep(2 ** attempt)
     raise last_exc
 
 
 async def _ainvoke_fraud(inputs: dict) -> FraudReport:
-    """
-    Two-step invocation strategy:
-      Step 1 — Structured output for safe fields (risk_score, anomalies, reasoning).
-               Boolean flags are excluded from the schema to avoid tool_use_failed 400s.
-      Step 2 — Plain text call to extract the three flag values via regex.
-               Falls back to deterministic values from inputs if parsing fails.
-
-    On 400 errors the function raises immediately (non-retryable).
-    On 429 / transient errors it retries with exponential backoff.
-    """
+    """Single structured-output call — boolean flags coerced from str by Pydantic v2."""
     last_exc = None
 
     for attempt in range(LLM_MAX_RETRIES):
         try:
             llm = get_async_llm()
-
-            # ── Step 1: Structured output (no boolean fields) ──────────────────
-            chain_struct = _FRAUD_PROMPT | llm.with_structured_output(_FraudReportNoBools)
-            core: _FraudReportNoBools = await chain_struct.ainvoke(inputs)
-
-            # ── Step 2: Plain text to extract flag values ──────────────────────
-            try:
-                chain_text = _FRAUD_PROMPT | llm
-                text_result = await chain_text.ainvoke(inputs)
-                flags = _parse_flags(text_result.content)
-                logger.debug("fraud_agent | parsed flags from plain text: %s", flags)
-            except Exception as flag_exc:
-                logger.warning(
-                    "fraud_agent | plain-text flag extraction failed, "
-                    "falling back to deterministic values: %s", flag_exc
-                )
-                # Fall back to the deterministic values passed in as inputs
-                flags = {
-                    "frequent_claims_flag": inputs.get("frequent_claims_flag") == "yes",
-                    "collusion_flag": inputs.get("collusion_flag") == "yes",
-                    "staging_flag": inputs.get("staging_flag") == "yes",
-                }
-
+            chain = _FRAUD_PROMPT | llm.with_structured_output(_FraudReportRaw)
+            raw: _FraudReportRaw = await chain.ainvoke(inputs)
             record_success()
             return FraudReport(
-                risk_score=core.risk_score,
-                frequent_claims_flag=flags.get(
-                    "frequent_claims_flag",
-                    inputs.get("frequent_claims_flag") == "yes",
-                ),
-                collusion_flag=flags.get(
-                    "collusion_flag",
-                    inputs.get("collusion_flag") == "yes",
-                ),
-                staging_flag=flags.get(
-                    "staging_flag",
-                    inputs.get("staging_flag") == "yes",
-                ),
-                anomalies=core.anomalies,
-                reasoning=core.reasoning,
+                risk_score=raw.risk_score,
+                frequent_claims_flag=_parse_bool(raw.frequent_claims_flag),
+                collusion_flag=_parse_bool(raw.collusion_flag),
+                staging_flag=_parse_bool(raw.staging_flag),
+                anomalies=raw.anomalies,
+                reasoning=raw.reasoning,
             )
 
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
             if "400" in exc_str or "bad request" in exc_str:
-                logger.error(
-                    "fraud_agent | synthesis | 400 Bad Request (non-retryable): %s", exc
-                )
+                logger.error("fraud_agent | synthesis | 400 Bad Request (non-retryable): %s", exc)
                 raise
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("fraud_agent | synthesis 429 (attempt %d)", attempt + 1)
                 record_429()
                 await asyncio.sleep(2 ** attempt)
             else:
-                logger.warning(
-                    "fraud_agent | synthesis LLM error (attempt %d): %s", attempt + 1, exc
-                )
+                logger.warning("fraud_agent | synthesis LLM error (attempt %d): %s", attempt + 1, exc)
                 await asyncio.sleep(2 ** attempt)
 
     raise last_exc
@@ -285,11 +204,7 @@ async def _ainvoke_fraud(inputs: dict) -> FraudReport:
 def _summarize_history(records: list[dict], max_records: int = MAX_HISTORY_RECORDS) -> str:
     if not records:
         return "No claim history found."
-    recent = sorted(
-        records,
-        key=lambda r: r.get("incident_date", ""),
-        reverse=True,
-    )[:max_records]
+    recent = sorted(records, key=lambda r: r.get("incident_date", ""), reverse=True)[:max_records]
     lines = [
         f"[{r.get('incident_date', 'N/A')}] {r.get('incident_type', 'Unknown')} | "
         f"Status: {r.get('claim_status', 'Unknown')} | "
@@ -348,12 +263,9 @@ async def arun_fraud_agent(state: dict) -> dict:
     frequent_claims_flag = denied_flagged_count >= FREQUENT_CLAIM_THRESHOLD
     collusion_flag = COLLUSION_SHOP.lower() in repair_shop.lower()
 
-    cutoff_date = (
-        datetime.now() - timedelta(days=VELOCITY_WINDOW_DAYS)
-    ).strftime("%Y-%m-%d")
+    cutoff_date = (datetime.now() - timedelta(days=VELOCITY_WINDOW_DAYS)).strftime("%Y-%m-%d")
     recent_claim_count = sum(
-        1 for r in history_records
-        if r.get("incident_date", "") >= cutoff_date
+        1 for r in history_records if r.get("incident_date", "") >= cutoff_date
     )
 
     risk_rating: str = customer_profile.get("risk_rating", "")
@@ -402,7 +314,7 @@ async def arun_fraud_agent(state: dict) -> dict:
             f"${estimated_loss:,.2f} (threshold: ${HIGH_VALUE_LOSS_THRESHOLD:,})."
         )
 
-    # ── LLM synthesis ──────────────────────────────────────────────────────────
+    # ── LLM synthesis (single call) ────────────────────────────────────────────
     llm_inputs = {
         "claim_id": claim_id,
         "incident_type": sanitized.get("incident_type", ""),

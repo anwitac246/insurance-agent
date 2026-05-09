@@ -5,18 +5,15 @@ Retrieves the relevant insurance policy via Pinecone RAG, performs semantic
 exclusion matching, checks for aggregate limit breaches, and returns a
 structured PolicyVerdict.
 
-Fixes applied:
-  - _PolicyVerdictNoBools schema separates the two boolean fields (incident_covered,
-    exclusion_triggered) from the rest. Structured output is used only for the safe
-    fields; the two booleans are parsed from a plain-text call via regex — eliminating
-    tool_use_failed 400 errors on Groq when the model outputs JSON True/False.
-  - Field descriptions on the Literal["yes","no"] fields now explicitly forbid
-    Python boolean literals.
-  - System prompt includes a CRITICAL format block with correct/wrong examples.
-  - All post-LLM deterministic overrides (aggregate breach, semantic exclusion gate)
-    are unchanged.
-  - 400 Bad Request errors still fail immediately (non-retryable).
-  - Embedding LRU cache retained.
+Performance fix (single LLM call)
+----------------------------------
+Previously used a two-step approach: one structured-output call (without
+boolean fields) + one plain-text call to extract booleans. That doubled
+LLM usage. Now uses a single structured-output call where the two boolean
+fields (`incident_covered`, `exclusion_triggered`) are typed as `str`.
+Pydantic v2 coerces any JSON value (True, False, "yes", "no") to str,
+eliminating the Groq 400 Bad Request errors caused by Literal["yes","no"]
+constraints, while keeping the number of LLM calls at 1.
 """
 
 import asyncio
@@ -24,7 +21,7 @@ import logging
 import re
 import time
 from functools import lru_cache
-from typing import Literal, Optional
+from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
@@ -61,26 +58,9 @@ def _encode(text: str):
 
 
 # ── Output schemas ─────────────────────────────────────────────────────────────
-# Boolean fields (incident_covered, exclusion_triggered) are removed from the
-# structured-output schema. Groq's model ignores Literal["yes","no"] constraints
-# and outputs JSON True/False, causing 400 tool_use_failed errors. We extract
-# these two fields from a separate plain-text call via regex instead.
+# boolean fields typed as `str` — Pydantic v2 coerces True/False/"yes"/"no"
+# to str without raising, avoiding Groq 400 tool_use_failed errors.
 
-class _PolicyVerdictNoBools(BaseModel):
-    """Structured output schema with boolean fields removed to avoid Groq 400s."""
-    policy_id: str
-    policy_limit: float
-    aggregate_limit: float
-    deductible: float
-    coverage_scope: str
-    exclusions: str
-    total_historical_payout: float
-    remaining_limit: float
-    exclusion_reason: str = ""
-    coverage_reasoning: str
-
-
-# Kept for reference / legacy — not used for LLM output any more.
 class _PolicyVerdictRaw(BaseModel):
     policy_id: str
     policy_limit: float
@@ -90,16 +70,18 @@ class _PolicyVerdictRaw(BaseModel):
     exclusions: str
     total_historical_payout: float
     remaining_limit: float
-    incident_covered: Literal["yes", "no"] = Field(
-        description='Must be the exact string "yes" or the exact string "no". '
-                    'NEVER output True, False, true, or false for this field.'
+    incident_covered: str = Field(
+        description='Output "yes" if the incident is covered, "no" otherwise.'
     )
-    exclusion_triggered: Literal["yes", "no"] = Field(
-        description='Must be the exact string "yes" or the exact string "no". '
-                    'NEVER output True, False, true, or false for this field.'
+    exclusion_triggered: str = Field(
+        description='Output "yes" if a policy exclusion applies, "no" otherwise.'
     )
     exclusion_reason: str = ""
     coverage_reasoning: str
+
+
+def _parse_bool(val: str) -> bool:
+    return str(val).lower().strip() in ("yes", "true", "1")
 
 
 # Public schema — proper booleans, used by downstream agents and metrics
@@ -118,24 +100,6 @@ class PolicyVerdict(BaseModel):
     coverage_reasoning: str
 
 
-# ── Boolean flag parser ────────────────────────────────────────────────────────
-
-_BOOL_RE = re.compile(
-    r'(incident_covered|exclusion_triggered)\s*[=:"\s]+\s*(yes|no|true|false)',
-    re.IGNORECASE,
-)
-
-
-def _parse_verdict_bools(text: str) -> dict[str, bool]:
-    """Extract incident_covered and exclusion_triggered from plain LLM text."""
-    result: dict[str, bool] = {}
-    for match in _BOOL_RE.finditer(text):
-        key = match.group(1).lower()
-        val = match.group(2).lower() in ("yes", "true")
-        result[key] = val
-    return result
-
-
 # ── Prompt ─────────────────────────────────────────────────────────────────────
 
 _PROMPT = ChatPromptTemplate.from_messages([
@@ -152,15 +116,8 @@ _PROMPT = ChatPromptTemplate.from_messages([
         "unambiguously applies to the narrative.\n"
         "  - Set incident_covered to 'no' if exclusion_triggered is 'yes' OR "
         "estimated_loss > remaining_limit.\n"
-        "  - Do NOT infer or guess exclusions — quote verbatim or set exclusion_triggered to 'no'.\n\n"
-        "CRITICAL — OUTPUT FORMAT RULES:\n"
-        "  incident_covered and exclusion_triggered MUST be the exact string "
-        '"yes" or the exact string "no".\n'
-        "  NEVER output True, False, true, false, or any boolean value for these fields.\n"
-        '  Correct:   incident_covered: "yes"\n'
-        '  Correct:   exclusion_triggered: "no"\n'
-        "  WRONG:     incident_covered: True    <- this will cause an API error\n"
-        "  WRONG:     exclusion_triggered: false <- this will cause an API error\n",
+        "  - Do NOT infer or guess exclusions — quote verbatim or set exclusion_triggered to 'no'.\n"
+        "  - For incident_covered and exclusion_triggered output the string 'yes' or 'no'.",
     ),
     (
         "human",
@@ -178,80 +135,49 @@ _PROMPT = ChatPromptTemplate.from_messages([
         "Deductible              : ${deductible}\n"
         "Total Historical Payout : ${total_historical_payout}\n"
         "Remaining Limit         : ${remaining_limit}\n\n"
-        "Provide a complete PolicyVerdict with all fields including "
-        'incident_covered and exclusion_triggered as "yes" or "no".',
+        "Provide a complete PolicyVerdict with all fields.",
     ),
 ])
 
 
-# ── Async LLM invocation ───────────────────────────────────────────────────────
+# ── Async LLM invocation (single call) ────────────────────────────────────────
 
 async def _ainvoke_llm(inputs: dict) -> PolicyVerdict:
-    """
-    Two-step invocation strategy:
-      Step 1 — Structured output for safe fields (no booleans).
-      Step 2 — Plain text call to extract incident_covered and exclusion_triggered
-               via regex. Falls back to safe defaults if parsing fails.
-    """
     last_exc = None
 
     for attempt in range(LLM_MAX_RETRIES):
         try:
             llm = get_async_llm()
-
-            # ── Step 1: Structured output (no boolean fields) ──────────────────
-            chain_struct = _PROMPT | llm.with_structured_output(_PolicyVerdictNoBools)
-            core: _PolicyVerdictNoBools = await chain_struct.ainvoke(inputs)
-
-            # ── Step 2: Plain text to extract boolean fields ───────────────────
-            try:
-                chain_text = _PROMPT | llm
-                text_result = await chain_text.ainvoke(inputs)
-                bools = _parse_verdict_bools(text_result.content)
-                logger.debug("policy_agent | parsed bools from plain text: %s", bools)
-            except Exception as bool_exc:
-                logger.warning(
-                    "policy_agent | plain-text bool extraction failed, "
-                    "defaulting to conservative values: %s", bool_exc
-                )
-                # Safe defaults: assume covered unless exclusion text is present
-                bools = {
-                    "incident_covered": not bool(core.exclusion_reason),
-                    "exclusion_triggered": bool(core.exclusion_reason),
-                }
-
+            chain = _PROMPT | llm.with_structured_output(_PolicyVerdictRaw)
+            raw: _PolicyVerdictRaw = await chain.ainvoke(inputs)
             record_success()
             return PolicyVerdict(
-                policy_id=core.policy_id,
-                policy_limit=core.policy_limit,
-                aggregate_limit=core.aggregate_limit,
-                deductible=core.deductible,
-                coverage_scope=core.coverage_scope,
-                exclusions=core.exclusions,
-                total_historical_payout=core.total_historical_payout,
-                remaining_limit=core.remaining_limit,
-                incident_covered=bools.get("incident_covered", True),
-                exclusion_triggered=bools.get("exclusion_triggered", False),
-                exclusion_reason=core.exclusion_reason,
-                coverage_reasoning=core.coverage_reasoning,
+                policy_id=raw.policy_id,
+                policy_limit=raw.policy_limit,
+                aggregate_limit=raw.aggregate_limit,
+                deductible=raw.deductible,
+                coverage_scope=raw.coverage_scope,
+                exclusions=raw.exclusions,
+                total_historical_payout=raw.total_historical_payout,
+                remaining_limit=raw.remaining_limit,
+                incident_covered=_parse_bool(raw.incident_covered),
+                exclusion_triggered=_parse_bool(raw.exclusion_triggered),
+                exclusion_reason=raw.exclusion_reason,
+                coverage_reasoning=raw.coverage_reasoning,
             )
 
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
             if "400" in exc_str or "bad request" in exc_str:
-                logger.error(
-                    "policy_agent | 400 Bad Request (non-retryable): %s", exc
-                )
+                logger.error("policy_agent | 400 Bad Request (non-retryable): %s", exc)
                 raise
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("policy_agent | 429 detected (attempt %d)", attempt + 1)
                 record_429()
                 await asyncio.sleep(2 ** attempt)
             else:
-                logger.warning(
-                    "policy_agent | LLM error (attempt %d): %s", attempt + 1, exc
-                )
+                logger.warning("policy_agent | LLM error (attempt %d): %s", attempt + 1, exc)
                 await asyncio.sleep(2 ** attempt)
 
     raise last_exc
@@ -365,7 +291,7 @@ async def arun_policy_agent(state: dict) -> dict:
     except Exception as exc:
         logger.warning("claim=%s | Exclusion similarity failed: %s", claim_id, exc)
 
-    # ── LLM adjudication ───────────────────────────────────────────────────────
+    # ── LLM adjudication (single call) ────────────────────────────────────────
     policy_limit = float(policy_meta.get("policy_limit", 0))
     deductible = float(policy_meta.get("deductible", 0))
 
@@ -391,9 +317,7 @@ async def arun_policy_agent(state: dict) -> dict:
             claim_id, verdict.incident_covered, verdict.exclusion_triggered,
         )
     except Exception as exc:
-        errors.append(
-            f"Policy agent LLM failed after {LLM_MAX_RETRIES} retries: {exc}"
-        )
+        errors.append(f"Policy agent LLM failed after {LLM_MAX_RETRIES} retries: {exc}")
         return {**state, "policy_verdict": None, "errors": errors}
 
     # ── Post-LLM deterministic overrides ──────────────────────────────────────

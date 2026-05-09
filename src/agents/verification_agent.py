@@ -2,16 +2,29 @@
 verification_agent.py
 ---------------------
 Document verification agent — async-first, with sync wrapper for compatibility.
+
+Fix 1 (LangChain template error): The old prompt used ChatPromptTemplate with a
+JSON example like {"PolicyNumber": "..."} in the system message. LangChain's
+template parser treats any {word} as a variable, so "PolicyNumber" was treated
+as a missing variable even with double-brace escaping (quotes in the key confuse
+the parser). Fixed by building HumanMessage/SystemMessage objects directly,
+bypassing the template engine entirely for the system message.
+
+Fix 2 (performance): Single LLM call returning plain JSON — no .with_structured_output().
+
+Fix 3 (429 resilience): If all LLM retries fail we fall back to the raw MongoDB
+OCR values rather than crashing, since the data is already structured there.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
-from typing import Optional
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from src.tools.groq_client import get_async_llm, record_429, record_success
@@ -20,6 +33,20 @@ from src.tools.mongo_client import get_db
 logger = logging.getLogger(__name__)
 
 LLM_MAX_RETRIES = 3
+
+# ── System prompt — plain string, never passed through ChatPromptTemplate ──────
+# Avoids LangChain treating JSON key names like "PolicyNumber" as {variables}.
+
+_SYSTEM = SystemMessage(content=(
+    "You are a document verification specialist for car insurance claims. "
+    "Extract and validate the OCR fields exactly as they appear. "
+    "Do not infer missing values. "
+    "If a field is missing or empty, return an empty string for text fields "
+    "and 0.0 for numeric fields.\n\n"
+    "Respond ONLY with a raw JSON object. No markdown, no explanation, no preamble. "
+    "Required keys and types: PolicyNumber (string), ClaimantName (string), "
+    "LossDate (string), RepairShopName (string), TotalEstimate (number)."
+))
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
@@ -39,48 +66,97 @@ class VerificationOutput(BaseModel):
     discrepancies: list[str]
 
 
-# ── Prompt ─────────────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        "You are a document verification specialist for car insurance claims. "
-        "Extract and validate the OCR fields exactly as they appear. "
-        "Do not infer missing values. "
-        "If a field is missing or empty, return an empty string for text fields "
-        "and 0.0 for numeric fields.",
-    ),
-    (
-        "human",
-        "Parse and validate the following OCR extraction from an insurance claim document:\n\n"
-        "{ocr_json}\n\n"
-        "Return the structured fields.",
-    ),
-])
+def _raw_ocr(ocr_raw: dict) -> OcrExtraction:
+    """Build OcrExtraction directly from raw MongoDB values — no LLM needed."""
+    return OcrExtraction(
+        PolicyNumber=str(ocr_raw.get("PolicyNumber", "")),
+        ClaimantName=str(ocr_raw.get("ClaimantName", "")),
+        LossDate=str(ocr_raw.get("LossDate", "")),
+        RepairShopName=str(ocr_raw.get("RepairShopName", "")),
+        TotalEstimate=float(ocr_raw.get("TotalEstimate", 0.0)),
+    )
 
 
-# ── Async LLM invocation ───────────────────────────────────────────────────────
+def _parse_ocr_json(text: str, ocr_raw: dict) -> OcrExtraction:
+    """Parse LLM plain-text JSON response; fall back to raw OCR on failure."""
+    cleaned = re.sub(r"```(?:json)?|```", "", text).strip()
+    data: dict = {}
+    try:
+        data = json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group())
+            except Exception:
+                pass
 
-async def _ainvoke_ocr(inputs: dict) -> OcrExtraction:
+    if not data:
+        logger.warning("verification_agent | JSON parse failed, using raw OCR values")
+        return _raw_ocr(ocr_raw)
+
+    try:
+        return OcrExtraction(
+            PolicyNumber=str(data.get("PolicyNumber", ocr_raw.get("PolicyNumber", ""))),
+            ClaimantName=str(data.get("ClaimantName", ocr_raw.get("ClaimantName", ""))),
+            LossDate=str(data.get("LossDate", ocr_raw.get("LossDate", ""))),
+            RepairShopName=str(data.get("RepairShopName", ocr_raw.get("RepairShopName", ""))),
+            TotalEstimate=float(data.get("TotalEstimate", ocr_raw.get("TotalEstimate", 0.0))),
+        )
+    except (TypeError, ValueError):
+        logger.warning("verification_agent | OcrExtraction build failed, using raw OCR")
+        return _raw_ocr(ocr_raw)
+
+
+# ── Async LLM invocation — messages built directly, no ChatPromptTemplate ─────
+
+async def _ainvoke_ocr(ocr_raw: dict) -> OcrExtraction:
+    """
+    Single LLM call returning plain JSON.
+    Uses LangChain message objects directly instead of ChatPromptTemplate to
+    avoid the {key} variable-parsing bug with JSON field names.
+    Falls back to raw OCR values if all retries fail.
+    """
+    human = HumanMessage(content=(
+        "Parse the following OCR extraction from an insurance claim document "
+        "and return a JSON object with the required keys.\n\n"
+        f"OCR data:\n{ocr_raw}\n\n"
+        "Return the JSON object only — no markdown, no explanation."
+    ))
+    messages = [_SYSTEM, human]
+
     last_exc = None
     for attempt in range(LLM_MAX_RETRIES):
         try:
             llm = get_async_llm()
-            chain = _prompt | llm.with_structured_output(OcrExtraction)
-            result = await chain.ainvoke(inputs)
+            result = await llm.ainvoke(messages)
             record_success()
-            return result
+            return _parse_ocr_json(result.content, ocr_raw)
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
+            if "400" in exc_str or "bad request" in exc_str:
+                logger.warning(
+                    "verification_agent | 400 on attempt %d, using raw OCR: %s",
+                    attempt + 1, exc,
+                )
+                return _raw_ocr(ocr_raw)
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
-                logger.warning("verification_agent | 429 detected (attempt %d)", attempt + 1)
+                logger.warning("verification_agent | 429 (attempt %d)", attempt + 1)
                 record_429()
                 await asyncio.sleep(2 ** attempt)
             else:
-                logger.warning("verification_agent | LLM error (attempt %d): %s", attempt + 1, exc)
+                logger.warning(
+                    "verification_agent | LLM error (attempt %d): %s", attempt + 1, exc
+                )
                 await asyncio.sleep(2 ** attempt)
-    raise last_exc
+
+    logger.error(
+        "verification_agent | all retries exhausted, using raw OCR: %s", last_exc
+    )
+    return _raw_ocr(ocr_raw)
 
 
 # ── Async main ─────────────────────────────────────────────────────────────────
@@ -101,15 +177,7 @@ async def arun_verification_agent(state: dict) -> dict:
     raw_data = {k: v for k, v in claim.items() if k != "_id"}
     ocr_raw = claim.get("ocr_extraction", {})
 
-    try:
-        parsed_ocr: OcrExtraction = await _ainvoke_ocr({"ocr_json": str(ocr_raw)})
-    except Exception as exc:
-        logger.exception("OCR parsing failed for claim %s", claim_id)
-        return {
-            **state,
-            "raw_data": raw_data,
-            "errors": errors + [f"OCR parsing failed: {exc}"],
-        }
+    parsed_ocr: OcrExtraction = await _ainvoke_ocr(ocr_raw)
 
     customer = db["Customer_Profiles"].find_one({"customer_id": claim["customer_id"]})
     discrepancies: list[str] = []
@@ -175,11 +243,12 @@ async def arun_verification_agent(state: dict) -> dict:
         "raw_data": raw_data,
         "sanitized_data": sanitized_data,
         "verification_output": verification_output.model_dump(),
+        "customer_profile": {k: v for k, v in (customer or {}).items() if k != "_id"},
         "errors": errors,
     }
 
 
-# ── Sync wrapper (for LangGraph compatibility) ─────────────────────────────────
+# ── Sync wrapper ───────────────────────────────────────────────────────────────
 
 def run_verification_agent(state: dict) -> dict:
     return asyncio.run(arun_verification_agent(state))
