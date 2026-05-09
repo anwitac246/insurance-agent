@@ -5,20 +5,23 @@ Retrieves the relevant insurance policy via Pinecone RAG, performs semantic
 exclusion matching, checks for aggregate limit breaches, and returns a
 structured PolicyVerdict.
 
-Key fixes vs. previous version:
-  - PolicyVerdict schema no longer has bare `bool` fields (incident_covered,
-    exclusion_triggered). Groq's function-calling validator rejects Python-style
-    True/False literals, producing 400 "tool_use_failed" errors. Replaced with
-    string literal enums ("yes"/"no") that are then converted deterministically
-    to booleans in post-processing — no LLM can hallucinate an invalid value.
-  - All post-LLM boolean logic (aggregate breach override, semantic exclusion
-    gate) runs AFTER conversion, same as before.
+Fixes applied:
+  - _PolicyVerdictNoBools schema separates the two boolean fields (incident_covered,
+    exclusion_triggered) from the rest. Structured output is used only for the safe
+    fields; the two booleans are parsed from a plain-text call via regex — eliminating
+    tool_use_failed 400 errors on Groq when the model outputs JSON True/False.
+  - Field descriptions on the Literal["yes","no"] fields now explicitly forbid
+    Python boolean literals.
+  - System prompt includes a CRITICAL format block with correct/wrong examples.
+  - All post-LLM deterministic overrides (aggregate breach, semantic exclusion gate)
+    are unchanged.
   - 400 Bad Request errors still fail immediately (non-retryable).
   - Embedding LRU cache retained.
 """
 
 import asyncio
 import logging
+import re
 import time
 from functools import lru_cache
 from typing import Literal, Optional
@@ -57,14 +60,28 @@ def _encode(text: str):
     return np.array(_cached_encode(text))
 
 
-# ── Output schema ──────────────────────────────────────────────────────────────
-# IMPORTANT: incident_covered and exclusion_triggered use string literal enums
-# ("yes" / "no") instead of bool. Groq's validator rejects Python True/False
-# literals in function call output, causing 400 "tool_use_failed" errors.
-# We convert to bool deterministically after the LLM call.
+# ── Output schemas ─────────────────────────────────────────────────────────────
+# Boolean fields (incident_covered, exclusion_triggered) are removed from the
+# structured-output schema. Groq's model ignores Literal["yes","no"] constraints
+# and outputs JSON True/False, causing 400 tool_use_failed errors. We extract
+# these two fields from a separate plain-text call via regex instead.
 
+class _PolicyVerdictNoBools(BaseModel):
+    """Structured output schema with boolean fields removed to avoid Groq 400s."""
+    policy_id: str
+    policy_limit: float
+    aggregate_limit: float
+    deductible: float
+    coverage_scope: str
+    exclusions: str
+    total_historical_payout: float
+    remaining_limit: float
+    exclusion_reason: str = ""
+    coverage_reasoning: str
+
+
+# Kept for reference / legacy — not used for LLM output any more.
 class _PolicyVerdictRaw(BaseModel):
-    """Internal schema sent to the LLM — uses string enums instead of booleans."""
     policy_id: str
     policy_limit: float
     aggregate_limit: float
@@ -74,12 +91,14 @@ class _PolicyVerdictRaw(BaseModel):
     total_historical_payout: float
     remaining_limit: float
     incident_covered: Literal["yes", "no"] = Field(
-        description="Is the incident covered by the policy? Answer 'yes' or 'no'."
+        description='Must be the exact string "yes" or the exact string "no". '
+                    'NEVER output True, False, true, or false for this field.'
     )
     exclusion_triggered: Literal["yes", "no"] = Field(
-        description="Does an exclusion clause apply to this claim? Answer 'yes' or 'no'."
+        description='Must be the exact string "yes" or the exact string "no". '
+                    'NEVER output True, False, true, or false for this field.'
     )
-    exclusion_reason: str = Field(default="")
+    exclusion_reason: str = ""
     coverage_reasoning: str
 
 
@@ -99,22 +118,22 @@ class PolicyVerdict(BaseModel):
     coverage_reasoning: str
 
 
-def _convert(raw: _PolicyVerdictRaw) -> PolicyVerdict:
-    """Convert string-enum booleans to proper Python bools."""
-    return PolicyVerdict(
-        policy_id=raw.policy_id,
-        policy_limit=raw.policy_limit,
-        aggregate_limit=raw.aggregate_limit,
-        deductible=raw.deductible,
-        coverage_scope=raw.coverage_scope,
-        exclusions=raw.exclusions,
-        total_historical_payout=raw.total_historical_payout,
-        remaining_limit=raw.remaining_limit,
-        incident_covered=raw.incident_covered == "yes",
-        exclusion_triggered=raw.exclusion_triggered == "yes",
-        exclusion_reason=raw.exclusion_reason,
-        coverage_reasoning=raw.coverage_reasoning,
-    )
+# ── Boolean flag parser ────────────────────────────────────────────────────────
+
+_BOOL_RE = re.compile(
+    r'(incident_covered|exclusion_triggered)\s*[=:"\s]+\s*(yes|no|true|false)',
+    re.IGNORECASE,
+)
+
+
+def _parse_verdict_bools(text: str) -> dict[str, bool]:
+    """Extract incident_covered and exclusion_triggered from plain LLM text."""
+    result: dict[str, bool] = {}
+    for match in _BOOL_RE.finditer(text):
+        key = match.group(1).lower()
+        val = match.group(2).lower() in ("yes", "true")
+        result[key] = val
+    return result
 
 
 # ── Prompt ─────────────────────────────────────────────────────────────────────
@@ -133,8 +152,15 @@ _PROMPT = ChatPromptTemplate.from_messages([
         "unambiguously applies to the narrative.\n"
         "  - Set incident_covered to 'no' if exclusion_triggered is 'yes' OR "
         "estimated_loss > remaining_limit.\n"
-        "  - Do NOT infer or guess exclusions — quote verbatim or set exclusion_triggered to 'no'.\n"
-        "  - For incident_covered and exclusion_triggered, you MUST answer exactly 'yes' or 'no'.",
+        "  - Do NOT infer or guess exclusions — quote verbatim or set exclusion_triggered to 'no'.\n\n"
+        "CRITICAL — OUTPUT FORMAT RULES:\n"
+        "  incident_covered and exclusion_triggered MUST be the exact string "
+        '"yes" or the exact string "no".\n'
+        "  NEVER output True, False, true, false, or any boolean value for these fields.\n"
+        '  Correct:   incident_covered: "yes"\n'
+        '  Correct:   exclusion_triggered: "no"\n'
+        "  WRONG:     incident_covered: True    <- this will cause an API error\n"
+        "  WRONG:     exclusion_triggered: false <- this will cause an API error\n",
     ),
     (
         "human",
@@ -152,8 +178,8 @@ _PROMPT = ChatPromptTemplate.from_messages([
         "Deductible              : ${deductible}\n"
         "Total Historical Payout : ${total_historical_payout}\n"
         "Remaining Limit         : ${remaining_limit}\n\n"
-        "Provide a complete PolicyVerdict. "
-        "Remember: incident_covered and exclusion_triggered must be exactly 'yes' or 'no'.",
+        "Provide a complete PolicyVerdict with all fields including "
+        'incident_covered and exclusion_triggered as "yes" or "no".',
     ),
 ])
 
@@ -161,14 +187,55 @@ _PROMPT = ChatPromptTemplate.from_messages([
 # ── Async LLM invocation ───────────────────────────────────────────────────────
 
 async def _ainvoke_llm(inputs: dict) -> PolicyVerdict:
+    """
+    Two-step invocation strategy:
+      Step 1 — Structured output for safe fields (no booleans).
+      Step 2 — Plain text call to extract incident_covered and exclusion_triggered
+               via regex. Falls back to safe defaults if parsing fails.
+    """
     last_exc = None
+
     for attempt in range(LLM_MAX_RETRIES):
         try:
             llm = get_async_llm()
-            chain = _PROMPT | llm.with_structured_output(_PolicyVerdictRaw)
-            raw: _PolicyVerdictRaw = await chain.ainvoke(inputs)
+
+            # ── Step 1: Structured output (no boolean fields) ──────────────────
+            chain_struct = _PROMPT | llm.with_structured_output(_PolicyVerdictNoBools)
+            core: _PolicyVerdictNoBools = await chain_struct.ainvoke(inputs)
+
+            # ── Step 2: Plain text to extract boolean fields ───────────────────
+            try:
+                chain_text = _PROMPT | llm
+                text_result = await chain_text.ainvoke(inputs)
+                bools = _parse_verdict_bools(text_result.content)
+                logger.debug("policy_agent | parsed bools from plain text: %s", bools)
+            except Exception as bool_exc:
+                logger.warning(
+                    "policy_agent | plain-text bool extraction failed, "
+                    "defaulting to conservative values: %s", bool_exc
+                )
+                # Safe defaults: assume covered unless exclusion text is present
+                bools = {
+                    "incident_covered": not bool(core.exclusion_reason),
+                    "exclusion_triggered": bool(core.exclusion_reason),
+                }
+
             record_success()
-            return _convert(raw)
+            return PolicyVerdict(
+                policy_id=core.policy_id,
+                policy_limit=core.policy_limit,
+                aggregate_limit=core.aggregate_limit,
+                deductible=core.deductible,
+                coverage_scope=core.coverage_scope,
+                exclusions=core.exclusions,
+                total_historical_payout=core.total_historical_payout,
+                remaining_limit=core.remaining_limit,
+                incident_covered=bools.get("incident_covered", True),
+                exclusion_triggered=bools.get("exclusion_triggered", False),
+                exclusion_reason=core.exclusion_reason,
+                coverage_reasoning=core.coverage_reasoning,
+            )
+
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
@@ -186,6 +253,7 @@ async def _ainvoke_llm(inputs: dict) -> PolicyVerdict:
                     "policy_agent | LLM error (attempt %d): %s", attempt + 1, exc
                 )
                 await asyncio.sleep(2 ** attempt)
+
     raise last_exc
 
 

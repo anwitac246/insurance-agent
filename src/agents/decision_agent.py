@@ -3,11 +3,14 @@ decision_agent.py
 -----------------
 Final claims adjudicator — async-first.
 
-Key fixes vs. previous version:
-  - DecisionOutput.approved now uses Literal["yes","no"] instead of bool.
-    Groq's function-calling validator rejects Python True/False literals in
-    structured output, causing 400 "tool_use_failed" errors. The string enum
-    is converted to a proper bool in post-processing.
+Fixes applied:
+  - _DecisionOutputNoBools schema removes the `approved` boolean field entirely.
+    Structured output is used only for the safe numeric/text fields; `approved`
+    is parsed from a plain-text call via regex — eliminating tool_use_failed 400
+    errors on Groq when the model outputs JSON True/False.
+  - Field description on _DecisionOutputRaw.approved now explicitly forbids
+    Python boolean literals (kept for reference, not used for LLM output).
+  - System prompt includes a CRITICAL format block with correct/wrong examples.
   - 400 Bad Request errors still fail immediately (non-retryable).
   - Float values pre-formatted as strings to avoid LangChain template misparsing.
 """
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Literal
 
@@ -29,11 +33,30 @@ logger = logging.getLogger(__name__)
 LLM_MAX_RETRIES = 3
 
 
-# ── Internal schema sent to LLM (string enum instead of bool) ─────────────────
+# ── Schemas ────────────────────────────────────────────────────────────────────
 
+# Structured output schema with the boolean `approved` field removed.
+# Groq's model ignores Literal["yes","no"] constraints and outputs JSON True/False,
+# causing 400 tool_use_failed. We parse `approved` from plain text instead.
+class _DecisionOutputNoBools(BaseModel):
+    """Structured output schema with approved field removed to avoid Groq 400s."""
+    final_payout: float = Field(
+        description="Calculated payout after deductible and limit checks"
+    )
+    denial_reason: str = Field(default="")
+    step_by_step_reasoning: str = Field(
+        description=(
+            "Full chain-of-thought: loss amount, deductible subtraction, "
+            "limit cap, fraud/exclusion adjustments"
+        )
+    )
+
+
+# Kept for reference / legacy — not used for LLM output any more.
 class _DecisionOutputRaw(BaseModel):
     approved: Literal["yes", "no"] = Field(
-        description="Is the claim approved? Answer exactly 'yes' or 'no'."
+        description='Must be the exact string "yes" or the exact string "no". '
+                    'NEVER output True, False, true, or false for this field.'
     )
     final_payout: float = Field(
         description="Calculated payout after deductible and limit checks"
@@ -47,8 +70,7 @@ class _DecisionOutputRaw(BaseModel):
     )
 
 
-# ── Public schema (proper bool) ────────────────────────────────────────────────
-
+# Public schema (proper bool) used by downstream metrics and API response
 class DecisionOutput(BaseModel):
     approved: bool
     final_payout: float
@@ -56,13 +78,20 @@ class DecisionOutput(BaseModel):
     step_by_step_reasoning: str
 
 
-def _convert(raw: _DecisionOutputRaw) -> DecisionOutput:
-    return DecisionOutput(
-        approved=raw.approved == "yes",
-        final_payout=raw.final_payout,
-        denial_reason=raw.denial_reason,
-        step_by_step_reasoning=raw.step_by_step_reasoning,
-    )
+# ── Boolean parser ─────────────────────────────────────────────────────────────
+
+_APPROVED_RE = re.compile(
+    r'approved\s*[=:"\s]+\s*(yes|no|true|false)',
+    re.IGNORECASE,
+)
+
+
+def _parse_approved(text: str) -> Optional[bool]:
+    """Extract the approved flag from plain LLM text. Returns None if not found."""
+    match = _APPROVED_RE.search(text)
+    if match:
+        return match.group(1).lower() in ("yes", "true")
+    return None
 
 
 # ── Prompt ─────────────────────────────────────────────────────────────────────
@@ -75,8 +104,14 @@ _prompt = ChatPromptTemplate.from_messages([
         "If errors exist, the claim is denied and payout is 0. "
         "If fraud risk is High, the claim is denied. "
         "If an exclusion is triggered, the claim is denied. "
-        "Provide complete step-by-step reasoning showing every calculation. "
-        "For the approved field, you MUST answer exactly 'yes' or 'no'.",
+        "Provide complete step-by-step reasoning showing every calculation.\n\n"
+        "CRITICAL — OUTPUT FORMAT RULES:\n"
+        '  The approved field MUST be the exact string "yes" or the exact string "no".\n'
+        "  NEVER output True, False, true, or false for this field.\n"
+        '  Correct:   approved: "yes"\n'
+        '  Correct:   approved: "no"\n'
+        "  WRONG:     approved: True    <- this will cause an API error\n"
+        "  WRONG:     approved: false   <- this will cause an API error\n",
     ),
     (
         "human",
@@ -90,20 +125,62 @@ _prompt = ChatPromptTemplate.from_messages([
         "=== Errors / Flags ===\n"
         "{errors}\n\n"
         "Calculate the final payout and provide a complete adjudication decision. "
-        "Remember: approved must be exactly 'yes' or 'no'.",
+        'Remember: approved must be exactly "yes" or "no".',
     ),
 ])
 
 
+# ── Async LLM invocation ───────────────────────────────────────────────────────
+
+# Type alias (Python 3.9 compat)
+from typing import Optional
+
+
 async def _ainvoke(inputs: dict) -> DecisionOutput:
+    """
+    Two-step invocation strategy:
+      Step 1 — Structured output for safe fields (final_payout, denial_reason,
+               step_by_step_reasoning). Boolean `approved` excluded from schema.
+      Step 2 — Plain text call to extract `approved` via regex.
+               Falls back to inferring approval from denial_reason if parsing fails.
+    """
     last_exc = None
+
     for attempt in range(LLM_MAX_RETRIES):
         try:
             llm = get_async_llm()
-            chain = _prompt | llm.with_structured_output(_DecisionOutputRaw)
-            raw: _DecisionOutputRaw = await chain.ainvoke(inputs)
+
+            # ── Step 1: Structured output (no boolean fields) ──────────────────
+            chain_struct = _prompt | llm.with_structured_output(_DecisionOutputNoBools)
+            core: _DecisionOutputNoBools = await chain_struct.ainvoke(inputs)
+
+            # ── Step 2: Plain text to extract `approved` ───────────────────────
+            try:
+                chain_text = _prompt | llm
+                text_result = await chain_text.ainvoke(inputs)
+                approved = _parse_approved(text_result.content)
+                logger.debug(
+                    "decision_agent | parsed approved=%s from plain text", approved
+                )
+            except Exception as bool_exc:
+                logger.warning(
+                    "decision_agent | plain-text approved extraction failed, "
+                    "inferring from denial_reason: %s", bool_exc
+                )
+                approved = None
+
+            # Fall back: if no `approved` parsed, infer from denial_reason + payout
+            if approved is None:
+                approved = not bool(core.denial_reason) and core.final_payout > 0
+
             record_success()
-            return _convert(raw)
+            return DecisionOutput(
+                approved=approved,
+                final_payout=core.final_payout,
+                denial_reason=core.denial_reason,
+                step_by_step_reasoning=core.step_by_step_reasoning,
+            )
+
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc).lower()
@@ -121,6 +198,7 @@ async def _ainvoke(inputs: dict) -> DecisionOutput:
                     "decision_agent | LLM error (attempt %d): %s", attempt + 1, exc
                 )
                 await asyncio.sleep(2 ** attempt)
+
     raise last_exc
 
 
