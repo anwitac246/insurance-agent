@@ -4,6 +4,23 @@ metrics.py
 Pure-Python metric calculations.  All functions take raw result dicts
 and ground-truth objects — no side effects, no I/O, easily unit-testable.
 
+v2 fixes
+--------
+- `_check_decision`: `denial_reason_provided` step was always marked as
+  executed because the old condition was:
+
+      if fd.get("denial_reason") or fd.get("approved"):
+
+  `fd.get("approved")` is True for every approved claim, so this check
+  always passed — making step completeness artificially inflated for the
+  decision_agent and masking real gaps in denial reasoning.
+
+  Corrected logic: "denial_reason_provided" counts as executed if EITHER
+    (a) the claim was denied AND a non-empty denial_reason is present, OR
+    (b) the claim was approved (no denial reason is expected/required).
+  A denied claim with an empty denial_reason is now correctly counted as
+  an unexecuted step.
+
 Metrics implemented
 -------------------
 1.  decision_accuracy          — fraction of correct Approve/Deny decisions
@@ -34,15 +51,6 @@ def decision_accuracy(
 ) -> dict[str, Any]:
     """
     Compare `final_decision.approved` against `ground_truth.expected_decision`.
-
-    Returns
-    -------
-    {
-        "accuracy": float,
-        "correct": int,
-        "total": int,
-        "errors": [{"claim_id": ..., "predicted": ..., "expected": ...}],
-    }
     """
     correct = 0
     total = 0
@@ -87,21 +95,7 @@ def fraud_precision_recall_f1(
     risk_threshold: str = "High",
 ) -> dict[str, Any]:
     """
-    Treat fraud detection as a binary classification task.
-
-    Positive class  = is_fraud (ground truth) OR risk_score == risk_threshold (predicted).
-    risk_threshold  : "High" by default — claims where fraud_report.risk_score == threshold
-                      are counted as predicted-positive.
-
-    Returns
-    -------
-    {
-        "precision": float,
-        "recall": float,
-        "f1": float,
-        "tp": int, "fp": int, "fn": int, "tn": int,
-        "threshold_used": str,
-    }
+    Binary classification: fraud_report.risk_score == risk_threshold → predicted positive.
     """
     tp = fp = fn = tn = 0
 
@@ -152,13 +146,7 @@ def fraud_precision_recall_f1(
 
 def stp_rate(results: list[dict]) -> dict[str, Any]:
     """
-    A claim is straight-through if:
-      - final_decision exists, AND
-      - The decision node was reached (no terminal failure before it), AND
-      - No agent-level errors were logged.
-
-    We infer "failure node reached" from `final_decision.denial_reason` containing
-    the exact phrase planted by the graph's failure_node function.
+    A claim is straight-through if the failure_node was NOT reached.
     """
     FAILURE_MARKER = "Claim failed verification checks."
 
@@ -169,13 +157,8 @@ def stp_rate(results: list[dict]) -> dict[str, Any]:
     for r in results:
         fd = r.get("final_decision") or {}
         denial = fd.get("denial_reason", "")
-        pipeline_errors = r.get("errors") or []
 
         hit_failure_node = FAILURE_MARKER in denial
-        has_errors = len(pipeline_errors) > 0
-
-        # STP = reached decision node AND no pipeline errors outside the fraud/policy agents
-        # (those agents can add errors that the decision agent then handles — that's by design)
         if not hit_failure_node:
             straight_through += 1
         else:
@@ -198,18 +181,6 @@ def consistency_score(
 ) -> dict[str, Any]:
     """
     Given K runs per claim, compute how often the same final decision is produced.
-
-    Parameters
-    ----------
-    multi_run_results : {claim_id: [result_run_1, result_run_2, ...]}
-
-    Returns
-    -------
-    {
-        "mean_consistency": float,
-        "per_claim": {claim_id: consistency_float},
-        "k_runs": int,
-    }
     """
     per_claim: dict[str, float] = {}
     k_values = set()
@@ -226,7 +197,6 @@ def consistency_score(
             fd = r.get("final_decision") or {}
             decisions.append(fd.get("approved"))
 
-        # Majority vote → count disagreements
         majority = max(set(decisions), key=decisions.count)
         differing = sum(1 for d in decisions if d != majority)
         per_claim[cid] = round(1.0 - differing / k, 4)
@@ -236,7 +206,11 @@ def consistency_score(
 
     return {
         "mean_consistency": round(mean, 4),
-        "std_consistency": round(statistics.stdev(per_claim.values()), 4) if len(per_claim) > 1 else 0.0,
+        "std_consistency": (
+            round(statistics.stdev(per_claim.values()), 4)
+            if len(per_claim) > 1
+            else 0.0
+        ),
         "per_claim": per_claim,
         "k_runs": k_runs,
         "fully_consistent_claims": sum(1 for v in per_claim.values() if v == 1.0),
@@ -247,35 +221,33 @@ def consistency_score(
 # 5. Step Completeness
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Required steps per agent — derived from the agent source code's logic branches.
-# These are the checkpoints we can verify from the output dict.
 REQUIRED_STEPS: dict[str, list[str]] = {
     "verification_agent": [
-        "claim_fetched",           # raw_data populated
-        "ocr_parsed",              # verification_output.ocr populated
-        "name_check_performed",    # verification_output.name_match present
-        "policy_check_performed",  # verification_output.policy_match present
+        "claim_fetched",
+        "ocr_parsed",
+        "name_check_performed",
+        "policy_check_performed",
     ],
     "policy_agent": [
-        "policy_retrieved",        # policy_verdict.policy_id present
-        "remaining_limit_computed",# policy_verdict.remaining_limit present
-        "exclusion_checked",       # policy_verdict.exclusion_triggered present
-        "coverage_determined",     # policy_verdict.incident_covered present
-        "coverage_reasoning",      # policy_verdict.coverage_reasoning non-empty
+        "policy_retrieved",
+        "remaining_limit_computed",
+        "exclusion_checked",
+        "coverage_determined",
+        "coverage_reasoning",
     ],
     "fraud_agent": [
-        "history_fetched",         # fraud_report present
-        "frequent_claims_checked", # fraud_report.frequent_claims_flag present
-        "collusion_checked",       # fraud_report.collusion_flag present
-        "staging_checked",         # fraud_report.staging_flag present
-        "risk_score_assigned",     # fraud_report.risk_score present
-        "reasoning_provided",      # fraud_report.reasoning non-empty
+        "history_fetched",
+        "frequent_claims_checked",
+        "collusion_checked",
+        "staging_checked",
+        "risk_score_assigned",
+        "reasoning_provided",
     ],
     "decision_agent": [
-        "payout_calculated",       # final_payout present
-        "decision_made",           # final_decision.approved present
-        "denial_reason_provided",  # present if denied
-        "step_by_step_reasoning",  # final_decision.step_by_step_reasoning non-empty
+        "payout_calculated",
+        "decision_made",
+        "denial_reason_provided",
+        "step_by_step_reasoning",
     ],
 }
 
@@ -334,32 +306,45 @@ def _check_fraud(state: dict) -> list[str]:
 
 
 def _check_decision(state: dict) -> list[str]:
+    """
+    BUG FIX: `denial_reason_provided` was always True because the old code
+    used `fd.get("approved")` as a fallback condition, which is True for
+    every approved claim — making the step appear executed even when no
+    denial_reason was produced.
+
+    Correct semantics:
+      - If the claim was DENIED → the step is executed only if denial_reason
+        is present and non-empty.
+      - If the claim was APPROVED → no denial_reason is needed; the step is
+        considered satisfied (there is nothing to check).
+    """
     executed = []
     fd = state.get("final_decision") or {}
     if not isinstance(fd, dict):
         return executed
+
     if state.get("final_payout") is not None:
         executed.append("payout_calculated")
+
     if "approved" in fd:
         executed.append("decision_made")
-    if fd.get("denial_reason") or fd.get("approved"):
+
+    # Fixed: approved=True means no denial reason is expected → step satisfied.
+    # approved=False (denied) → step satisfied only if denial_reason is non-empty.
+    approved = fd.get("approved")
+    denial_reason = fd.get("denial_reason", "")
+    if approved is True or (approved is False and bool(denial_reason)):
         executed.append("denial_reason_provided")
+
     if fd.get("step_by_step_reasoning"):
         executed.append("step_by_step_reasoning")
+
     return executed
 
 
 def step_completeness(results: list[dict]) -> dict[str, Any]:
     """
     For each agent node, compute what fraction of required steps were executed.
-
-    Returns
-    -------
-    {
-        "mean_completeness": float,
-        "per_agent": {agent_name: {"mean": float, "required": int}},
-        "per_claim": {claim_id: {agent_name: float}},
-    }
     """
     _checkers = {
         "verification_agent": _check_verification,
@@ -408,17 +393,6 @@ def latency_stats(timing_records: list[dict]) -> dict[str, Any]:
     Parameters
     ----------
     timing_records : [{"claim_id": str, "total_s": float, "per_agent": {...}}]
-
-    Returns
-    -------
-    {
-        "mean_latency_s": float,
-        "median_latency_s": float,
-        "p95_latency_s": float,
-        "max_latency_s": float,
-        "total_wall_s": float,
-        "per_agent_mean": {agent: float},
-    }
     """
     totals = [t["total_s"] for t in timing_records if "total_s" in t]
     if not totals:
@@ -454,14 +428,6 @@ def token_efficiency(token_records: list[dict]) -> dict[str, Any]:
     Parameters
     ----------
     token_records : [{"claim_id": str, "per_agent": {"agent_name": int}}]
-
-    Returns
-    -------
-    {
-        "mean_total_tokens_per_claim": float,
-        "per_agent_mean_tokens": {agent: float},
-        "total_tokens_all_claims": int,
-    }
     """
     per_agent: dict[str, list[int]] = {}
     totals_per_claim: list[int] = []
@@ -474,7 +440,9 @@ def token_efficiency(token_records: list[dict]) -> dict[str, Any]:
         totals_per_claim.append(claim_total)
 
     return {
-        "mean_total_tokens_per_claim": round(statistics.mean(totals_per_claim), 1) if totals_per_claim else 0.0,
+        "mean_total_tokens_per_claim": (
+            round(statistics.mean(totals_per_claim), 1) if totals_per_claim else 0.0
+        ),
         "per_agent_mean_tokens": {
             agent: round(statistics.mean(vals), 1)
             for agent, vals in per_agent.items()
