@@ -4,34 +4,6 @@ policy_agent.py
 Retrieves the relevant insurance policy via Pinecone RAG, performs semantic
 exclusion matching, checks for aggregate limit breaches, and returns a
 structured PolicyVerdict.
-
-v3 — Root-cause fix for the 400 infinite-repetition loop
----------------------------------------------------------
-The previous schema had two str fields with near-identical names right next
-to each other:
-
-    incident_covered: str   ← "Output 'yes' if covered, 'no' otherwise"
-    exclusion_triggered: str ← "Output 'yes' if an exclusion applies, 'no' otherwise"
-
-llama-3.1-8b on Groq enters a copy-paste loop filling these two fields
-repeatedly until it hits the token limit, producing a malformed JSON blob
-with hundreds of duplicate keys. Groq rejects it with a 400 tool_use_failed.
-
-THE FIX: remove both boolean fields from the LLM schema entirely.
-
-We already have everything needed to compute them deterministically:
-  - exclusion_triggered: cosine similarity between narrative and exclusions
-    text (already computed) + LLM's own exclusion_reason being non-empty.
-  - incident_covered: NOT (exclusion_triggered OR aggregate_breach
-    OR estimated_loss > remaining_limit).
-
-The LLM now only produces fields it can fill reliably:
-  - coverage_reasoning  (free-form text — no repetition risk)
-  - exclusion_reason    (free-form text — empty string when no exclusion)
-
-All boolean decisions are made in deterministic Python after the LLM returns.
-This also makes the agent more reliable: the LLM can no longer approve a
-claim that mathematically breaches the aggregate limit.
 """
 
 import asyncio

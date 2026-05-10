@@ -2,27 +2,6 @@
 nma_agent.py
 ------------
 Single-agent insurance claim adjudicator.
-
-v2 fixes
---------
-- PROMPT NOW INCLUDES claim history summary so the agent can detect:
-    * frequent_claimant  (multiple denied/flagged prior claims)
-    * aggregate_breach   (total historical payout already near the aggregate limit)
-  Previously the prompt only received claim + customer + policy, making these
-  two scenarios structurally impossible to detect.
-
-- Added deterministic pre-checks mirroring the MAS agents so the LLM prompt
-  contains explicit signals rather than relying on the LLM to infer them from
-  raw history records:
-    * frequent_claims_signal: True if >= 3 denied/flagged prior claims
-    * aggregate_breach_signal: True if estimated_loss > remaining_limit
-    * collusion_signal: True if repair shop matches flagged collusion shop
-
-- `approved` field typed as str (same fix as MAS decision_agent v2) so
-  Pydantic v2 coerces True/False JSON values without raising 400 Bad Request.
-
-- `final_payout` typed as str to avoid JSON number-to-float schema issues on
-  Groq free tier (same pattern as MAS decision_agent).
 """
 
 from __future__ import annotations

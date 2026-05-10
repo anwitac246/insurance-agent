@@ -2,27 +2,6 @@
 fraud_agent.py
 --------------
 Five-signal fraud detection engine — async-first.
-
-v2 changes
-----------
-- REMOVED the separate `_ainvoke_severity` LLM call. Narrative severity scoring
-  is now injected as a sub-task inside the single `_ainvoke_fraud` synthesis
-  prompt. The LLM scores severity AND produces the FraudReport in one pass.
-
-  LLM call count per claim: 2 → 1
-
-- The deterministic staging flag logic is retained exactly as before:
-    staging_flag = (llm_severity >= STAGING_SEVERITY_THRESHOLD
-                    AND estimated_loss < STAGING_ESTIMATE_CAP)
-  The synthesis prompt instructs the LLM to emit `narrative_severity_score` as
-  a top-level integer field, which we read back to drive the staging flag.
-
-- Boolean flags (`frequent_claims_flag`, `collusion_flag`, `staging_flag`) are
-  still typed as `str` in _FraudReportRaw so Pydantic v2 coerces True/False
-  without raising, avoiding Groq 400 Bad Request errors.
-
-- Post-LLM deterministic overrides still enforce all three flag values from
-  Python logic, so the LLM output for those fields is advisory-only.
 """
 
 import asyncio

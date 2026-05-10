@@ -2,28 +2,6 @@
 decision_agent.py
 -----------------
 Final claims adjudicator — async-first.
-
-v2 changes
-----------
-- REMOVED the two-call approach (structured call + plain-text call to parse
-  `approved`). This was the source of both the 400 Bad Request errors AND
-  double LLM usage per claim.
-
-  Now uses a SINGLE structured-output call where `approved` is typed as `str`
-  (like the boolean fields in fraud_agent and policy_agent). Pydantic v2 coerces
-  any JSON value — True, False, "yes", "no" — to str without raising, which
-  eliminates the Groq tool_use_failed 400s caused by Literal["yes","no"]
-  constraints.
-
-  LLM call count per claim: 2 → 1
-
-- Fixed latent NameError: `Optional` is now imported at the top of the file
-  before it is used in type annotations. In Python < 3.10, `from __future__
-  import annotations` defers evaluation but any explicit runtime reference
-  (e.g., function signatures not under annotations) would still fail.
-
-- Removed the dead _DecisionOutputRaw and _parse_approved helpers — no longer
-  needed and were a maintenance hazard.
 """
 
 from __future__ import annotations

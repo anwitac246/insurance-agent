@@ -2,25 +2,6 @@
 context_fetcher.py
 ------------------
 Fetches all context needed by the NMA single agent.
-
-v2 fixes
---------
-- CRITICAL: Wrong MongoDB collection names caused every claim lookup to fail
-  (returning None), which raised ValueError for every claim, resulting in
-  0% accuracy in the eval.
-
-  Fixed mappings:
-    db.claims     → db["Active_Claims"]       (attribute access fetches wrong coll)
-    db.customers  → db["Customer_Profiles"]
-
-- CRITICAL: Wrong field name for claim narrative.
-    claim.get("incident_narrative")  → claim.get("narrative")
-  The seed script stores the field as "narrative", not "incident_narrative".
-
-- MISSING CONTEXT: The NMA agent was never given claim history, making it
-  impossible to detect frequent_claimant or aggregate_breach scenarios.
-  Claim_History records are now fetched and summarised before being passed
-  to the LLM, matching the data signals available to the MAS fraud agent.
 """
 
 import asyncio

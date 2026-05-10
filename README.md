@@ -1,88 +1,82 @@
-# Multi-Agent Car Insurance Claim Processing System
+# Multi-Agent vs. Single-Agent Insurance Claim Adjudication System
 
 ## Overview
-This is a production-grade, stateful, and modular multi-agent backend system designed to automate end-to-end car insurance claim processing. It leverages Large Language Models (LLMs), visual recognition, Retrieval-Augmented Generation (RAG), and a synthetic internal database to orchestrate a complex workflow from document ingestion to final decision-making.
+This repository contains a production-grade, stateful evaluation framework designed to benchmark a **Multi-Agent System (MAS)** against a **Single-Agent System (NMA)** for end-to-end car insurance claim processing. 
+
+Insurance claim adjudication is a complex domain that requires cross-referencing user narratives with physical evidence, historical claims data, and dense policy exclusions. The primary goal of this project is to empirically measure whether breaking this complex task into a graph of specialized, parallel agents (MAS) yields statistically significant improvements in accuracy, Straight-Through Processing (STP) rates, and fraud detection over a traditional monolithic "all-in-one" LLM prompt (NMA).
 
 ---
 
-## Architecture
-
-* **Backend Framework**: FastAPI (Asynchronous background task processing)
-* **Agent Orchestration**: LangGraph (StateGraph for routing and cyclic flows)
-* **LLM Provider**: Groq (`llama-3.1-8b-instant` for text, `llama-3.2-11b-vision-preview` for damage analysis)
-* **Vector Database**: Pinecone (RAG lookups for policy rules and fraud case studies)
-* **Relational/Document Database**: MongoDB (Motor async driver) for Claim State persistence and internal "Ground Truth" data.
-* **OCR Tools**: Tesseract / PaddleOCR (for extracting raw text from submitted PDFs/images)
-
-### Agent Roles
-1. **Orchestrator**: Controls the workflow using LangGraph. It routes states conditionally (e.g., looping back if documents are missing).
-2. **Document Processing Agent**: Uses Pydantic-driven structured outputs to extract data from 8 different required documents.
-3. **Policy Verification Agent**: Cross-references extracted data against the internal database.
-4. **Fraud Detection Agent**: Analyzes historical claims, vector-database case studies, and internal fraud signals.
-5. **Decision Agent**: Synthesizes all data to generate an Approved, Rejected, or Escalate-to-Human decision.
+## The Goal
+1. **Automate Adjudication**: Automatically parse a car insurance claim and determine if it should be approved or denied based on fraud signals, aggregate limits, and semantic policy exclusions.
+2. **Prevent Hallucination**: Use deterministic Python fallbacks and pre-computations so the LLM cannot approve a claim that violates hard mathematical rules (e.g., claiming more than the remaining limit).
+3. **Benchmarking**: Provide a 50-claim "Ground Truth" testbed to evaluate the latency, token efficiency, and precision/recall of the MAS vs the NMA.
 
 ---
 
-## Design & Thought Process
-
-### 1. Strict Document Validation (The "No Hallucination" Rule)
-Instead of relying entirely on LLMs to guess if a claim is valid, the **Document Agent** was designed with strict Pydantic schemas representing the required documents (Policy, Claim Form, RC, License, FIR, etc.).
-- The LLM is forced via `.with_structured_output()` to output structured JSON.
-- We then use **deterministic Python logic** to cross-validate the parsed data (e.g., explicit `if policy.vehicle_number != rc.vehicle_number` checks). This ensures high reliability and zero LLM hallucinations during the critical validation phase.
-
-### 2. Synthetic Data Strategy & "Ground Truth" Verification
-A major limitation of standard AI demos is that they only look at the documents provided by the user. To make this production-grade, we integrated a real **MongoDB database layer**.
-- **The Process**: We built a `generate_synthetic_db.py` script using the `Faker` library. It seeds the database with thousands of relational records: Policyholders, Vehicles, Policies, Past Claims, and Fraud Signals.
-- **The Benefit**: 
-  - When the **Policy Agent** runs, it takes the extracted policy number and queries the DB to see if the policy actually exists, is active, and if the name on the claim matches the actual owner in the database.
-  - When the **Fraud Agent** runs, it actively fetches the vehicle's past claims and checks for pre-existing `fraud_signals` (e.g., "vin_cloning_suspected") to generate an accurate risk score. 
-
-### 3. Modular RAG Implementation
-Rather than stuffing all policy rules and edge cases into the agent prompts, we created an `ingest_data.py` script that splits markdown files (`data/policy_data` and `data/fraud_data`) using header-aware chunking and embeds them locally using free HuggingFace `sentence-transformers`. This data is pushed to Pinecone, allowing agents to dynamically pull relevant clauses based on the claim context.
+## Tech Stack
+* **Agent Orchestration Framework**: LangGraph (StateGraph for sequential/parallel routing and cyclic flows in MAS)
+* **LLM Provider**: Groq (`llama-3.3-70b-versatile` for deep reasoning tasks at high speed)
+* **Vector Database (RAG)**: Pinecone (Used for semantic matching between the claim narrative and dense policy exclusion clauses)
+* **Document/Relational Database**: MongoDB (Serves as the internal "Ground Truth" for claim history, customer profiles, and active claims)
+* **Validation**: Pydantic v2 (Enforces strict JSON schemas for all LLM outputs)
+* **Embedding Model**: HuggingFace `sentence-transformers/all-MiniLM-L6-v2` (for RAG vectorization)
 
 ---
 
-## How to Run
+## Implementation Strategy
+
+### 1. Synthetic Data & "Ground Truth"
+A major limitation of standard AI demos is the reliance on isolated prompt inputs. To make this production-grade, we integrated a real MongoDB database layer seeded with thousands of relational records (Policyholders, Vehicles, Past Claims, Fraud Signals). The system evaluates claims against this persistent state.
+
+### 2. The Multi-Agent System (MAS) Paradigm
+Found in `src/agents`. This architecture splits the cognitive load into discrete, specialized nodes:
+- **Verification Agent**: Extracts and validates the raw claim and OCR data.
+- **Parallel Analysis**:
+  - **Policy Agent**: Performs Pinecone RAG lookups to check coverage scope and semantic exclusions.
+  - **Fraud Agent**: Queries MongoDB for the customer's claim history to detect frequent claimants, collusion rings, and staging anomalies.
+- **Decision Agent**: Synthesizes the outputs of the parallel nodes to calculate the final payout and approve/deny the claim.
+
+### 3. The Single-Agent System (NMA) Paradigm
+Found in `insurance-agent-NMA/nma_src`. This architecture serves as the baseline comparison. It features a single `context_fetcher.py` script that aggregates all MongoDB and Pinecone data into one massive payload. A single prompt forces the LLM to simultaneously detect fraud, determine policy coverage, and calculate the final financial payout in one shot.
+
+---
+
+## Setup Instructions
 
 ### 1. Prerequisites
 - Python 3.11+
-- Tesseract OCR installed on your system.
-- A local **MongoDB** instance running on `localhost:27017`.
-- Create a `.env` file in the root directory:
+- A local **MongoDB** instance running on `localhost:27017`
+- A `.env` file in the root directory:
   ```env
   GROQ_API_KEY=your_groq_key
   PINECONE_API_KEY=your_pinecone_key
-  PINECONE_ENVIRONMENT=us-east-1
-  MONGODB_URI=mongodb://localhost:27017
-  DATABASE_NAME=insurance_claims
+  MONGODB_URL=mongodb://localhost:27017
   ```
 
-### 2. Setup
+### 2. Environment Setup
 Install the dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Initialize the Databases
-First, push the Markdown policy/fraud data to your Pinecone vector database:
+### 3. Database Initialization
+Seed the local MongoDB instance with the 50 synthetic claims, customer profiles, and historical records:
 ```bash
-python scripts/ingest_data.py
+python scripts/seed_data.py
 ```
 
-Next, seed the local MongoDB instance with the synthetic policyholder, vehicle, and claims data:
+### 4. Running the Evaluations
+The evaluation runners execute the agents against the 50-claim dataset and output detailed JSON reports containing accuracy, precision/recall, latency, and token metrics.
+
+To evaluate the Multi-Agent System (MAS):
 ```bash
-python scripts/generate_synthetic_db.py
+python -m evals.run_evals
 ```
 
-### 4. Run the API Server
-Start the FastAPI backend:
+To evaluate the Single-Agent System (NMA):
 ```bash
-uvicorn app.main:app --reload
+python insurance-agent-NMA/evals/run_evals_nma.py
 ```
 
-### 5. Testing the Pipeline
-You can test the extraction and validation logic in isolation using the provided test script:
-```bash
-python scripts/test_validation.py
-```
-This will run the Document Agent against dummy text to show exactly how it flags missing fields and tracks missing documents.
+Results and metric reports will be populated in the `evals/results` folder.

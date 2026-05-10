@@ -4,23 +4,6 @@ metrics.py
 Pure-Python metric calculations.  All functions take raw result dicts
 and ground-truth objects — no side effects, no I/O, easily unit-testable.
 
-v2 fixes
---------
-- `_check_decision`: `denial_reason_provided` step was always marked as
-  executed because the old condition was:
-
-      if fd.get("denial_reason") or fd.get("approved"):
-
-  `fd.get("approved")` is True for every approved claim, so this check
-  always passed — making step completeness artificially inflated for the
-  decision_agent and masking real gaps in denial reasoning.
-
-  Corrected logic: "denial_reason_provided" counts as executed if EITHER
-    (a) the claim was denied AND a non-empty denial_reason is present, OR
-    (b) the claim was approved (no denial reason is expected/required).
-  A denied claim with an empty denial_reason is now correctly counted as
-  an unexecuted step.
-
 Metrics implemented
 -------------------
 1.  decision_accuracy          — fraction of correct Approve/Deny decisions

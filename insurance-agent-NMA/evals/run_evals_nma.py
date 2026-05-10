@@ -2,24 +2,6 @@
 run_evals_nma.py
 ----------------
 Evaluation harness for the NMA (single-agent) system.
-
-v2 fixes
---------
-- CRITICAL: Failed claims were silently dropped (exception path never appended
-  to `results`), so with the broken context_fetcher ALL claims failed and
-  `results` was empty → 0% accuracy even if the agent logic was correct.
-
-  Fixed: failed claims now append a well-formed result dict with
-  approved=False, mirroring the fallback pattern in run_evals.py.
-
-- `db.Active_Claims.find()` changed to `db["Active_Claims"].find()` for
-  explicit, unambiguous collection access (attribute access works in pymongo
-  but is easy to misread during debugging).
-
-- Added inter-claim delay matching run_evals.py to avoid Groq 429s.
-
-- Added scenario_breakdown to the report for apples-to-apples comparison
-  with the MAS eval report.
 """
 
 import sys
