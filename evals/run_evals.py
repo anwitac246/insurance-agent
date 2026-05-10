@@ -193,7 +193,9 @@ def _run_llm_judge(
                     f"Claim: {gt.incident_type}, Loss: ${gt.estimated_loss:,.2f}, "
                     f"Scenario: {gt.fraud_scenario}. "
                     f"Policy: remaining_limit={pv.get('remaining_limit')}, "
-                    f"exclusions={str(pv.get('exclusions', ''))[:150]}."
+                    f"exclusions={str(pv.get('exclusions', ''))[:150]}. "
+                    f"Fraud Risk: {r.get('fraud_report', {}).get('risk_score', 'Unknown')}. "
+                    f"Errors: {r.get('errors', [])}."
                 )
                 h_report = h_judge.evaluate(facts=facts, reasoning=reasoning)
                 if h_report is not None:
