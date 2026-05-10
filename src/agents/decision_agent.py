@@ -59,15 +59,14 @@ class _DecisionOutputRaw(BaseModel):
             "NEVER output True, False, true, or false."
         )
     )
-    final_payout: float = Field(
-        description="Calculated payout after deductible and limit checks"
+    final_payout: str = Field(
+        description="Calculated payout as a string. Example: '0.0' or '2213.65'"
     )
-    denial_reason: str = Field(default="")
+    denial_reason: str = Field(
+        description="If approved, leave as empty string. If denied, provide the reason."
+    )
     step_by_step_reasoning: str = Field(
-        description=(
-            "Full chain-of-thought: loss amount, deductible subtraction, "
-            "limit cap, fraud/exclusion adjustments"
-        )
+        description="MAX 1 SENTENCE. Briefly state why the claim was approved or denied."
     )
 
 
@@ -95,7 +94,7 @@ _prompt = ChatPromptTemplate.from_messages([
         "  - fraud_report.risk_score == 'High'\n"
         "  - policy_verdict.exclusion_triggered is true\n"
         "  - policy_verdict.incident_covered is false\n\n"
-        "Provide complete step-by-step reasoning showing every calculation.\n\n"
+        "CRITICAL: Keep reasoning to exactly ONE SHORT SENTENCE to avoid loops.\n\n"
         "CRITICAL — OUTPUT FORMAT:\n"
         '  approved MUST be the exact string "yes" or "no".\n'
         "  NEVER output True, False, true, or false for this field.\n"
@@ -137,7 +136,7 @@ async def _ainvoke(inputs: dict) -> DecisionOutput:
 
             return DecisionOutput(
                 approved=_parse_bool(raw.approved),
-                final_payout=raw.final_payout,
+                final_payout=float(raw.final_payout),
                 denial_reason=raw.denial_reason,
                 step_by_step_reasoning=raw.step_by_step_reasoning,
             )

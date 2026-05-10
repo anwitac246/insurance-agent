@@ -42,8 +42,8 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-GROQ_MODEL = "llama-3.1-8b-instant"
-GROQ_FAST_MODEL = "llama-3.1-8b-instant"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_FAST_MODEL = "llama-3.3-70b-versatile"
 ROTATION_THRESHOLD = 5
 COOLDOWN_SECONDS = 60
 
