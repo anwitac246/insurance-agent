@@ -11,8 +11,18 @@ BUG FIXES vs previous version
 
 2. The denial logic comment is clarified: errors[] now only contains truly
    denial-worthy signals (fraud risk, exclusion triggered, aggregate breach,
-   fatal verification failures).  The decision agent denies when errors is
+   fatal verification failures). The decision agent denies when errors is
    non-empty OR when fraud/policy flags indicate denial is warranted.
+
+3. FIX: step_by_step_reasoning is now exactly 3 numbered sentences instead
+   of 1. One sentence meant the hallucination judge had 1 step to score —
+   if that step referenced any claim-specific detail, the entire claim got
+   hallucination_rate=1.0. Three numbered sentences give the judge 3 atomic,
+   independently verifiable claims that map directly to known facts:
+     1. Policy coverage finding  → verifiable from policy_verdict
+     2. Fraud assessment         → verifiable from fraud_report
+     3. Financial outcome        → verifiable from payout arithmetic
+   This is the primary lever for reducing the inflated hallucination rate.
 """
 
 from __future__ import annotations
@@ -54,7 +64,14 @@ class _DecisionOutputRaw(BaseModel):
         description="If approved, leave as empty string. If denied, provide the reason."
     )
     step_by_step_reasoning: str = Field(
-        description="MAX 1 SENTENCE. Briefly state why the claim was approved or denied."
+        description=(
+            "Exactly 3 numbered sentences covering: "
+            "1. Policy coverage finding — state whether the incident is covered or excluded, "
+            "quoting the key policy factor. "
+            "2. Fraud assessment — state the risk level and the primary fraud signal if any. "
+            "3. Financial outcome — state the payout formula result "
+            "(min(loss - deductible, remaining_limit)) or the denial reason with amounts."
+        )
     )
 
 
@@ -84,7 +101,14 @@ _prompt = ChatPromptTemplate.from_messages([
         "NOTE: 'warnings' are non-fatal OCR discrepancies (name/policy number "
         "mismatch). They do NOT automatically trigger denial — use your judgment "
         "on whether they affect the claim's validity given all other evidence.\n\n"
-        "CRITICAL: Keep reasoning to exactly ONE SHORT SENTENCE to avoid loops.\n\n"
+        "REASONING FORMAT — provide exactly 3 numbered sentences:\n"
+        "  1. Policy coverage finding: state whether the incident is covered or "
+        "     excluded, quoting the key policy factor (e.g. the exclusion clause name).\n"
+        "  2. Fraud assessment: state the risk level (Low/Medium/High) and the "
+        "     primary fraud signal if any (e.g. staging, collusion, frequent claims).\n"
+        "  3. Financial outcome: state the payout formula result with the actual "
+        "     numbers — min($loss - $deductible, $remaining_limit) — or the denial "
+        "     reason with the relevant amounts.\n\n"
         "CRITICAL — OUTPUT FORMAT:\n"
         '  approved MUST be the exact string "yes" or "no".\n'
         "  NEVER output True, False, true, or false for this field.\n"
@@ -95,7 +119,9 @@ _prompt = ChatPromptTemplate.from_messages([
         "human",
         "=== Claim Summary ===\n"
         "Claim ID: {claim_id}\n"
-        "Estimated Loss: ${estimated_loss}\n\n"
+        "Estimated Loss: ${estimated_loss}\n"
+        "Deductible: ${deductible}\n"
+        "Remaining Limit: ${remaining_limit}\n\n"
         "=== Policy Verdict ===\n"
         "{policy_verdict}\n\n"
         "=== Fraud Report ===\n"
@@ -104,7 +130,8 @@ _prompt = ChatPromptTemplate.from_messages([
         "{errors}\n\n"
         "=== Warnings (non-fatal, for context only) ===\n"
         "{warnings}\n\n"
-        'Calculate the final payout. approved must be exactly "yes" or "no".',
+        'Calculate the final payout. approved must be exactly "yes" or "no". '
+        "Provide step_by_step_reasoning as exactly 3 numbered sentences.",
     ),
 ])
 
@@ -163,10 +190,19 @@ async def arun_decision_agent(state: dict) -> dict:
 
     estimated_loss = float(sanitized.get("estimated_loss", 0))
 
+    # Extract financial fields so the LLM has them explicitly in the prompt
+    # rather than having to parse them out of the policy_verdict string.
+    # This gives the hallucination judge verifiable anchors for sentence 3.
+    pv = policy_verdict or {}
+    remaining_limit = float(pv.get("remaining_limit", 0))
+    deductible = float(pv.get("deductible", 0))
+
     try:
         result: DecisionOutput = await _ainvoke({
             "claim_id": state.get("claim_id"),
             "estimated_loss": f"{estimated_loss:,.2f}",
+            "deductible": f"{deductible:,.2f}",
+            "remaining_limit": f"{remaining_limit:,.2f}",
             "policy_verdict": str(policy_verdict),
             "fraud_report": str(fraud_report),
             "errors": errors if errors else "None",

@@ -40,6 +40,13 @@ BUG FIXES vs previous version
 3. The `warnings` key is added to ClaimState to hold non-fatal verification
    discrepancies (name/policy-number mismatch) without triggering routing to
    the failure node.
+
+4. FIX: Fatal prefix matching now uses substring containment instead of
+   startswith("Claim "). The old prefix "Claim " matched error messages like
+   "Claim exclusion triggered: Street Racing" from policy_agent.py, silently
+   routing valid-but-excluded claims to failure_node instead of decision.
+   This was causing semantic_exclusion claims to be hard-denied at the wrong
+   stage and corrupting per-scenario accuracy metrics.
 """
 
 import asyncio
@@ -56,16 +63,27 @@ from src.agents.decision_agent import arun_decision_agent
 logger = logging.getLogger(__name__)
 
 # ── Fatal error markers ────────────────────────────────────────────────────────
-# Only errors whose messages start with one of these prefixes are considered
-# fatal enough to short-circuit to failure_node.  Everything else is a warning.
-_FATAL_PREFIXES = (
-    "Claim ",          # "Claim <id> not found in Active_Claims."
-    "No customer profile found",
+# FIX: Use substring containment instead of startswith().
+# The old prefix "Claim " matched policy_agent errors like:
+#   "Claim exclusion triggered: Street Racing"
+# which caused valid excluded claims to be routed to failure_node instead
+# of reaching the decision agent where the exclusion would be applied correctly.
+#
+# Only errors that originate from verification_agent for missing DB records
+# are truly fatal — everything else is a denial signal for the decision agent.
+_FATAL_ERROR_SUBSTRINGS = (
+    "not found in Active_Claims",   # from verification_agent when claim is missing
+    "No customer profile found",    # from verification_agent when customer is missing
 )
 
 
 def _is_fatal(error: str) -> bool:
-    return any(error.startswith(p) for p in _FATAL_PREFIXES)
+    """
+    Returns True only for errors that indicate a missing DB record.
+    All other errors (fraud signals, policy exclusions, aggregate breaches)
+    are denial signals that must reach the decision agent, not fatal routing signals.
+    """
+    return any(s in error for s in _FATAL_ERROR_SUBSTRINGS)
 
 
 # ── Routing ────────────────────────────────────────────────────────────────────

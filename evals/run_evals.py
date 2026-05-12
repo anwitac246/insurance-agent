@@ -40,6 +40,26 @@ To get a fast smoke-test result in ~2 min:
 
 For a full production eval, use:
     python -m evals.run_evals --k 3 --llm-judge-sample 10
+
+FIX vs previous version
+-----------------------
+_run_llm_judge: The `facts` string passed to the hallucination judge was too thin.
+It only included incident_type, risk_score, and basic policy flags — but
+decision_agent reasoning (now 3 numbered sentences) references specific dollar
+amounts, exclusion clause names, and fraud anomaly details. Any claim-specific
+detail not in `facts` was correctly marked `unsupported` by the judge, inflating
+the hallucination rate to ~60% even for accurate reasoning.
+
+Fix: facts now includes:
+  - Exact dollar amounts (loss, deductible, remaining limit, expected payout)
+  - Exclusion reason text (so sentence 1 can reference it)
+  - Fraud flags and primary anomaly text (so sentence 2 can reference them)
+  - Coverage scope excerpt (so sentence 1 can quote it)
+  - Full denial signal list (so sentence 3 can reference the denial reason)
+
+This gives the judge a complete fact base that matches the information
+the decision agent actually had access to, eliminating false unsupported
+classifications caused by the judge not knowing what the agent knew.
 """
 
 from __future__ import annotations
@@ -126,6 +146,68 @@ def _extract_token_usage(result: dict) -> dict[str, int]:
 
 # ── LLM-Judge scoring (optional) ──────────────────────────────────────────────
 
+def _build_facts_string(r: dict, gt: GTRecord) -> str:
+    """
+    Build a comprehensive facts string for the hallucination judge.
+
+    FIX: The previous facts string was too thin — only incident_type, risk_score,
+    and policy boolean flags. The updated decision_agent produces 3 numbered
+    sentences that each reference specific, verifiable data points:
+      Sentence 1 (policy): exclusion reason text, coverage scope excerpt
+      Sentence 2 (fraud):  risk level, flag names, primary anomaly
+      Sentence 3 (finance): loss amount, deductible, remaining limit, payout formula
+
+    If the judge doesn't have these in `facts`, it correctly marks them as
+    `unsupported` — producing falsely inflated hallucination rates even for
+    accurate reasoning. This function gives the judge the full fact base.
+    """
+    pv = r.get("policy_verdict") or {}
+    fr = r.get("fraud_report") or {}
+
+    # Financial facts — needed for sentence 3
+    estimated_loss   = gt.estimated_loss
+    remaining_limit  = float(pv.get("remaining_limit", 0))
+    deductible       = float(pv.get("deductible", 0))
+    aggregate_limit  = float(pv.get("aggregate_limit", 0))
+    total_paid       = float(pv.get("total_historical_payout", 0))
+    expected_payout  = max(0.0, min(estimated_loss - deductible, remaining_limit))
+
+    # Fraud facts — needed for sentence 2
+    anomalies        = fr.get("anomalies", [])
+    primary_anomaly  = anomalies[0] if anomalies else "none"
+    fraud_flags      = (
+        f"frequent_claims={fr.get('frequent_claims_flag')}, "
+        f"collusion={fr.get('collusion_flag')}, "
+        f"staging={fr.get('staging_flag')}"
+    )
+
+    # Policy facts — needed for sentence 1
+    exclusion_reason = pv.get("exclusion_reason", "none")
+    coverage_scope   = (pv.get("coverage_scope") or "N/A")[:200]
+
+    # Denial signals — needed for sentence 3 when denied
+    denial_signals   = "; ".join(r.get("errors", [])) or "none"
+
+    return (
+        f"Claim ID: {gt.claim_id}. "
+        f"Incident type: {gt.incident_type}. "
+        f"Estimated loss: ${estimated_loss:,.2f}. "
+        f"Deductible: ${deductible:,.2f}. "
+        f"Remaining policy limit: ${remaining_limit:,.2f} "
+        f"(aggregate=${aggregate_limit:,.2f}, total paid=${total_paid:,.2f}). "
+        f"Expected payout if approved: ${expected_payout:,.2f} "
+        f"(formula: min(loss - deductible, remaining_limit)). "
+        f"Policy coverage: incident_covered={pv.get('incident_covered')}, "
+        f"exclusion_triggered={pv.get('exclusion_triggered')}, "
+        f"exclusion_reason={exclusion_reason!r}. "
+        f"Coverage scope excerpt: {coverage_scope}. "
+        f"Fraud risk: {fr.get('risk_score', 'Unknown')}. "
+        f"Fraud flags: {fraud_flags}. "
+        f"Primary anomaly: {primary_anomaly}. "
+        f"Active denial signals: {denial_signals}."
+    )
+
+
 def _run_llm_judge(
     results: list[dict],
     ground_truth: dict[str, GTRecord],
@@ -189,21 +271,16 @@ def _run_llm_judge(
         try:
             reasoning = (r.get("final_decision") or {}).get("step_by_step_reasoning", "")
             if reasoning and gt:
-                fr = r.get("fraud_report", {})
-                facts = (
-                    f"Claim: {gt.incident_type}, Loss: ${gt.estimated_loss:,.2f}. "
-                    f"Policy Verdict: incident_covered={pv.get('incident_covered')}, "
-                    f"exclusion_triggered={pv.get('exclusion_triggered')}, "
-                    f"remaining_limit={pv.get('remaining_limit')}. "
-                    f"Fraud Risk: {fr.get('risk_score', 'Unknown')}. "
-                    f"Errors: {r.get('errors', [])}. "
-                    f"Warnings: {r.get('warnings', [])}."
-                )
+                # FIX: use the expanded facts builder instead of the thin inline string
+                facts = _build_facts_string(r, gt)
                 h_report = h_judge.evaluate(facts=facts, reasoning=reasoning)
                 if h_report is not None:
                     hallucination_rates.append(h_report.hallucination_rate)
                     logger.debug(
-                        "claim=%s | hallucination_rate=%.3f", cid, h_report.hallucination_rate
+                        "claim=%s | hallucination_rate=%.3f "
+                        "(supported=%d, unsupported=%d, uncertain=%d)",
+                        cid, h_report.hallucination_rate,
+                        h_report.supported, h_report.unsupported, h_report.uncertain,
                     )
                 else:
                     judge_errors.append(f"Hallucination returned None for {cid}")

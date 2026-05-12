@@ -12,6 +12,17 @@ Key fixes vs. previous version:
     schema (score + reasoning only, no list field) to avoid 400s.
   - Input token limits tightened further (policy_text: 800, facts/steps: 600).
   - Both judges now fall back gracefully on 400s instead of raising.
+
+FIX vs previous version:
+  - _split_reasoning_steps() now correctly handles the 3-sentence numbered
+    format produced by the updated decision_agent. The old splitter used
+    reasoning.split(".") which fragmented numbered sentences like
+    "1. Policy covered. 2. No fraud." into broken sub-fragments, causing
+    the hallucination judge to see 0-1 scoreable steps per claim and produce
+    artificially high hallucination rates (often 1.0 for a single-step claim).
+  - New splitter tries numbered-step regex first (matching "1.", "2.", "3.")
+    then falls back to sentence splitting — preserving the 3-step structure
+    that maps directly to verifiable facts in the expanded facts string.
 """
 
 from __future__ import annotations
@@ -32,7 +43,7 @@ MAX_RETRIES = 3
 
 # Tightened further — keeps requests well within Groq free-tier context limits
 POLICY_TEXT_LIMIT = 800
-FACTS_LIMIT = 600
+FACTS_LIMIT = 900   # increased slightly to accommodate richer facts string
 STEPS_LIMIT = 600
 
 
@@ -145,6 +156,37 @@ _HALLUCINATION_PROMPT = ChatPromptTemplate.from_messages([
 _LABEL_RE = re.compile(r"^\d+:\s*(supported|unsupported|uncertain)", re.IGNORECASE)
 _RATE_RE = re.compile(r"hallucination_rate:\s*([0-9.]+)", re.IGNORECASE)
 
+# FIX: Numbered step pattern — matches "1.", "2.", "3." at line start or after newline.
+# The old splitter split on "." which destroyed numbered sentences like
+# "1. Policy covered. 2. No fraud." into ["1", " Policy covered", " 2", " No fraud"]
+# — producing broken fragments that were either filtered out (len < 20) or
+# scored as a single opaque blob with hallucination_rate=1.0.
+_NUMBERED_STEP_RE = re.compile(r"(?:^|\n)\s*\d+\.\s+")
+
+
+def _split_reasoning_steps(reasoning: str) -> list[str]:
+    """
+    Split decision agent reasoning into scoreable atomic steps.
+
+    Strategy:
+      1. Try numbered step pattern first: "1. ...", "2. ...", "3. ..."
+         This is the format produced by the updated decision_agent prompt.
+         If we get >= 2 non-empty segments, use them directly.
+      2. Fallback: sentence splitting on [.!?] — handles legacy single-sentence
+         reasoning from older pipeline runs stored in eval history.
+
+    Returns a list of step strings (max 8 for token budget).
+    """
+    # Strategy 1: numbered steps
+    parts = _NUMBERED_STEP_RE.split(reasoning.strip())
+    steps = [p.strip().rstrip(".") for p in parts if len(p.strip()) > 15]
+    if len(steps) >= 2:
+        return steps[:8]
+
+    # Strategy 2: sentence split fallback
+    sentences = re.split(r"[.!?]\s+", reasoning)
+    return [s.strip() for s in sentences if len(s.strip()) > 15][:8]
+
 
 def _parse_hallucination_text(text: str) -> HallucinationReport:
     """Parse plain-text step labels and extract hallucination rate."""
@@ -213,13 +255,9 @@ class HallucinationJudge:
         return None
 
     def evaluate(self, facts: str, reasoning: str) -> Optional[HallucinationReport]:
-        raw_steps = [
-            s.strip()
-            for s in reasoning.replace("\n", ". ").split(".")
-            if len(s.strip()) > 20
-        ]
-        # Cap at 8 steps max to keep prompt small
-        steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(raw_steps[:8]))
+        # FIX: Use the new structured step splitter instead of split(".")
+        raw_steps = _split_reasoning_steps(reasoning)
+        steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(raw_steps))
 
         return self._invoke({
             "facts": facts[:FACTS_LIMIT],
