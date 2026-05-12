@@ -156,12 +156,9 @@ _HALLUCINATION_PROMPT = ChatPromptTemplate.from_messages([
 _LABEL_RE = re.compile(r"^\d+:\s*(supported|unsupported|uncertain)", re.IGNORECASE)
 _RATE_RE = re.compile(r"hallucination_rate:\s*([0-9.]+)", re.IGNORECASE)
 
-# FIX: Numbered step pattern — matches "1.", "2.", "3." at line start or after newline.
-# The old splitter split on "." which destroyed numbered sentences like
-# "1. Policy covered. 2. No fraud." into ["1", " Policy covered", " 2", " No fraud"]
-# — producing broken fragments that were either filtered out (len < 20) or
-# scored as a single opaque blob with hallucination_rate=1.0.
-_NUMBERED_STEP_RE = re.compile(r"(?:^|\n)\s*\d+\.\s+")
+# FIX: Numbered step pattern — matches "1.", "2.", "3." at line start, after newline, or after space.
+# The LLM often outputs all 3 steps on a single line separated by spaces.
+_NUMBERED_STEP_RE = re.compile(r"(?:^|\s+)\d+\.\s+")
 
 
 def _split_reasoning_steps(reasoning: str) -> list[str]:
