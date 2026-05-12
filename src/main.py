@@ -21,8 +21,6 @@ logger = logging.getLogger(__name__)
 
 
 # ── Pre-warm singletons at import time ────────────────────────────────────────
-# This runs once when the module is first imported (app startup).
-# Subsequent calls hit the lru_cache and return instantly.
 
 def _prewarm():
     try:
@@ -44,7 +42,6 @@ def _prewarm():
 
 _prewarm()
 
-# ── Import graph after pre-warming ────────────────────────────────────────────
 from src.graph.graph import compiled_graph
 from src.graph.state import ClaimState
 
@@ -59,6 +56,9 @@ def process_claim(claim_id: str) -> ClaimState:
         "final_decision": None,
         "final_payout": None,
         "errors": [],
+        # BUG FIX: initialize warnings so verification_agent can append to it
+        # without KeyError and graph nodes can safely read it.
+        "warnings": [],
     }
     return compiled_graph.invoke(initial_state)
 
@@ -91,6 +91,7 @@ if __name__ == "__main__":
     _print_section("SANITIZED DATA", result.get("sanitized_data"))
     _print_section("POLICY VERDICT", result.get("policy_verdict"))
     _print_section("FRAUD REPORT", result.get("fraud_report"))
+    _print_section("WARNINGS", result.get("warnings") or "None")
     _print_section("ERRORS", result.get("errors") or "None")
 
     print(f"\n{'═' * 50}")

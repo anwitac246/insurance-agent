@@ -2,6 +2,17 @@
 decision_agent.py
 -----------------
 Final claims adjudicator — async-first.
+
+BUG FIXES vs previous version
+------------------------------
+1. The `warnings` list (non-fatal verification discrepancies like name/policy
+   number mismatch) is now passed to the LLM as additional context so it can
+   factor in OCR quality issues without being hard-denied by them.
+
+2. The denial logic comment is clarified: errors[] now only contains truly
+   denial-worthy signals (fraud risk, exclusion triggered, aggregate breach,
+   fatal verification failures).  The decision agent denies when errors is
+   non-empty OR when fraud/policy flags indicate denial is warranted.
 """
 
 from __future__ import annotations
@@ -9,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Optional  # must be imported before first use
+from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
@@ -28,8 +39,7 @@ class _DecisionOutputRaw(BaseModel):
     Raw LLM output schema.
 
     `approved` typed as `str` — Pydantic v2 coerces True/False/"yes"/"no" to str
-    without raising, eliminating Groq 400 Bad Request tool_use_failed errors that
-    occur when the model outputs JSON True instead of the string "yes".
+    without raising, eliminating Groq 400 Bad Request tool_use_failed errors.
     """
     approved: str = Field(
         description=(
@@ -48,7 +58,6 @@ class _DecisionOutputRaw(BaseModel):
     )
 
 
-# Public schema — proper Python bool, used by downstream metrics and API response
 class DecisionOutput(BaseModel):
     approved: bool
     final_payout: float
@@ -72,6 +81,9 @@ _prompt = ChatPromptTemplate.from_messages([
         "  - fraud_report.risk_score == 'High'\n"
         "  - policy_verdict.exclusion_triggered is true\n"
         "  - policy_verdict.incident_covered is false\n\n"
+        "NOTE: 'warnings' are non-fatal OCR discrepancies (name/policy number "
+        "mismatch). They do NOT automatically trigger denial — use your judgment "
+        "on whether they affect the claim's validity given all other evidence.\n\n"
         "CRITICAL: Keep reasoning to exactly ONE SHORT SENTENCE to avoid loops.\n\n"
         "CRITICAL — OUTPUT FORMAT:\n"
         '  approved MUST be the exact string "yes" or "no".\n'
@@ -88,21 +100,18 @@ _prompt = ChatPromptTemplate.from_messages([
         "{policy_verdict}\n\n"
         "=== Fraud Report ===\n"
         "{fraud_report}\n\n"
-        "=== Errors / Flags ===\n"
+        "=== Errors / Denial Signals ===\n"
         "{errors}\n\n"
+        "=== Warnings (non-fatal, for context only) ===\n"
+        "{warnings}\n\n"
         'Calculate the final payout. approved must be exactly "yes" or "no".',
     ),
 ])
 
 
-# ── Async LLM invocation — single call ────────────────────────────────────────
+# ── Async LLM invocation ───────────────────────────────────────────────────────
 
 async def _ainvoke(inputs: dict) -> DecisionOutput:
-    """
-    Single structured-output call.
-    `approved` is a str field — Pydantic v2 accepts True/False/"yes"/"no" all coerced to str,
-    avoiding the Groq 400 tool_use_failed error that occurred with Literal["yes","no"].
-    """
     last_exc: Optional[Exception] = None
 
     for attempt in range(LLM_MAX_RETRIES):
@@ -147,6 +156,7 @@ async def _ainvoke(inputs: dict) -> DecisionOutput:
 async def arun_decision_agent(state: dict) -> dict:
     t0 = time.perf_counter()
     errors: list[str] = list(state.get("errors", []))
+    warnings: list[str] = list(state.get("warnings", []))
     sanitized = state.get("sanitized_data", {})
     policy_verdict = state.get("policy_verdict", {})
     fraud_report = state.get("fraud_report", {})
@@ -160,6 +170,7 @@ async def arun_decision_agent(state: dict) -> dict:
             "policy_verdict": str(policy_verdict),
             "fraud_report": str(fraud_report),
             "errors": errors if errors else "None",
+            "warnings": warnings if warnings else "None",
         })
     except Exception as exc:
         logger.exception(

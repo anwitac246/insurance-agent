@@ -2,6 +2,34 @@
 fraud_agent.py
 --------------
 Five-signal fraud detection engine — async-first.
+
+BUG FIXES vs previous version
+------------------------------
+1. STAGING DETECTION WAS COMPLETELY BROKEN.
+   The previous code computed:
+       staging_flag_det = (severity_score >= 7) AND (estimated_loss < 1_000)
+   But seed_data sets estimated_loss to $8k–$20k for staged accidents —
+   only the OCR-extracted TotalEstimate is $200.  The condition was
+   therefore NEVER true for any staged-accident claim, meaning the MAS
+   never flagged a single staged accident.
+
+   Fix: staging now correctly compares:
+       ocr_total_estimate  (the repair-shop document figure, $200)
+   against
+       estimated_loss      (what the claimant says the incident cost, $18k)
+   i.e.:  staging_flag_det = (severity >= 7) AND (ocr_total_estimate < 1_000)
+
+   ocr_total_estimate is now read from sanitized_data["ocr_total_estimate"],
+   which verification_agent now always populates.
+
+2. ocr_total_estimate is injected into the LLM prompt so the model can
+   reason about the mismatch (e.g. "narrative describes a 12-car pileup
+   but the OCR estimate is only $200").  Previously the LLM never saw the
+   OCR figure and could not flag the staging anomaly itself.
+
+3. The pre-computed staging signal ("YES"/"NO") is now also injected into
+   the prompt alongside the other deterministic signals so the LLM can
+   incorporate it.
 """
 
 import asyncio
@@ -27,7 +55,8 @@ FREQUENT_CLAIM_THRESHOLD = 3
 VELOCITY_WINDOW_DAYS = 365
 VELOCITY_THRESHOLD = 3
 STAGING_SEVERITY_THRESHOLD = 7
-STAGING_ESTIMATE_CAP = 1_000
+# BUG FIX: staging estimate cap now applies to ocr_total_estimate, NOT estimated_loss
+STAGING_OCR_ESTIMATE_CAP = 1_000
 HIGH_VALUE_LOSS_THRESHOLD = 10_000
 LLM_MAX_RETRIES = 3
 MAX_HISTORY_RECORDS = 10
@@ -88,8 +117,6 @@ class FraudReport(BaseModel):
 
 
 # ── Single combined prompt ─────────────────────────────────────────────────────
-# Severity scoring is now a sub-task inside this prompt.
-# The LLM emits `narrative_severity_score` alongside all fraud fields.
 
 _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
     (
@@ -111,18 +138,20 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
     (
         "human",
         "=== Claim Summary ===\n"
-        "Claim ID      : {claim_id}\n"
-        "Incident Type : {incident_type}\n"
-        "Narrative     : {narrative}\n"
-        "Estimated Loss: ${estimated_loss}\n"
-        "Repair Shop   : {repair_shop}\n\n"
+        "Claim ID          : {claim_id}\n"
+        "Incident Type     : {incident_type}\n"
+        "Narrative         : {narrative}\n"
+        "Claimant Loss Est : ${estimated_loss}  (what the claimant says the incident cost)\n"
+        "OCR Repair Est    : ${ocr_total_estimate}  (figure extracted from repair document)\n"
+        "Repair Shop       : {repair_shop}\n\n"
         "=== Pre-computed Deterministic Anomalies ===\n"
         "{deterministic_anomalies}\n\n"
         "=== Signal Summary ===\n"
         "Frequent Claims Flag (>= {frequent_threshold} denied/flagged): {frequent_claims_flag}\n"
         "Collusion Shop Flag                                           : {collusion_flag}\n"
-        "Staging Check (severity>={severity_threshold}, est<${estimate_cap})\n"
-        "  → You must score severity first, then set staging_flag accordingly.\n\n"
+        "Staging Pre-Signal (OCR est <${ocr_cap} AND claimant est >=${min_loss_for_staging})\n"
+        "  Pre-computed staging signal                                 : {staging_signal}\n"
+        "  → Score narrative severity first, then set staging_flag='yes' if severity>={severity_threshold} AND staging signal is YES.\n\n"
         "=== Recent Claim History (last {max_history} records) ===\n"
         "{history_summary}\n\n"
         "=== Customer Profile ===\n"
@@ -137,11 +166,6 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
 # ── Async LLM invocation — single call ────────────────────────────────────────
 
 async def _ainvoke_fraud(inputs: dict) -> tuple[int, FraudReport]:
-    """
-    Single structured-output call.
-    Returns (severity_score, FraudReport).
-    Boolean flags coerced from str by Pydantic v2.
-    """
     last_exc: Optional[Exception] = None
 
     for attempt in range(LLM_MAX_RETRIES):
@@ -226,11 +250,18 @@ async def arun_fraud_agent(state: dict) -> dict:
     customer_id: str = sanitized.get("customer_id", "")
     repair_shop: str = sanitized.get("repair_shop", "")
     estimated_loss: float = float(sanitized.get("estimated_loss", 0))
+
+    # BUG FIX: read ocr_total_estimate for staging detection.
+    # verification_agent now always populates this from parsed_ocr.TotalEstimate.
+    # For staged accidents seed_data sets TotalEstimate=$200 while
+    # estimated_loss=$8k-$20k — this mismatch is the staging signal.
+    ocr_total_estimate: float = float(sanitized.get("ocr_total_estimate", estimated_loss))
+
     narrative: str = sanitized.get("narrative", "")
 
     logger.info(
-        "fraud_agent | claim=%s | customer=%s | shop='%s' | loss=%.2f",
-        claim_id, customer_id, repair_shop, estimated_loss,
+        "fraud_agent | claim=%s | customer=%s | shop='%s' | loss=%.2f | ocr_est=%.2f",
+        claim_id, customer_id, repair_shop, estimated_loss, ocr_total_estimate,
     )
 
     # ── Fetch claim history from MongoDB ──────────────────────────────────────
@@ -264,8 +295,14 @@ async def arun_fraud_agent(state: dict) -> dict:
         risk_rating == "High Risk" and estimated_loss > HIGH_VALUE_LOSS_THRESHOLD
     )
 
+    # BUG FIX: staging pre-signal uses ocr_total_estimate (the OCR figure),
+    # NOT estimated_loss (the claimant's declared loss).
+    # For staged accidents: ocr_total_estimate=$200, estimated_loss=$18k.
+    # The LLM will then confirm staging if narrative severity is also high.
+    staging_pre_signal = ocr_total_estimate < STAGING_OCR_ESTIMATE_CAP
+
     # Build deterministic anomalies list BEFORE the LLM call.
-    # Staging anomaly is added after we get severity back from the LLM.
+    # Staging anomaly is added AFTER we get severity back from the LLM.
     deterministic_anomalies: list[str] = []
     if frequent_claims_flag_det:
         deterministic_anomalies.append(
@@ -286,6 +323,12 @@ async def arun_fraud_agent(state: dict) -> dict:
             f"High Risk customer submitting high-value claim of "
             f"${estimated_loss:,.2f} (threshold: ${HIGH_VALUE_LOSS_THRESHOLD:,})."
         )
+    if staging_pre_signal:
+        deterministic_anomalies.append(
+            f"OCR estimate mismatch: repair document shows only "
+            f"${ocr_total_estimate:,.2f} while claimant declares "
+            f"${estimated_loss:,.2f} — possible staging indicator."
+        )
 
     # ── Single LLM call — severity scoring + fraud synthesis combined ─────────
     llm_inputs = {
@@ -293,13 +336,16 @@ async def arun_fraud_agent(state: dict) -> dict:
         "incident_type": sanitized.get("incident_type", ""),
         "narrative": narrative,
         "estimated_loss": f"{estimated_loss:,.2f}",
+        "ocr_total_estimate": f"{ocr_total_estimate:,.2f}",
         "repair_shop": repair_shop,
         "deterministic_anomalies": _format_anomalies(deterministic_anomalies),
         "frequent_threshold": FREQUENT_CLAIM_THRESHOLD,
         "severity_threshold": STAGING_SEVERITY_THRESHOLD,
-        "estimate_cap": f"{STAGING_ESTIMATE_CAP:,}",
+        "ocr_cap": f"{STAGING_OCR_ESTIMATE_CAP:,}",
+        "min_loss_for_staging": f"{STAGING_OCR_ESTIMATE_CAP:,}",
         "frequent_claims_flag": "yes" if frequent_claims_flag_det else "no",
         "collusion_flag": "yes" if collusion_flag_det else "no",
+        "staging_signal": "YES" if staging_pre_signal else "NO",
         "history_summary": _summarize_history(history_records),
         "max_history": MAX_HISTORY_RECORDS,
         "risk_rating": risk_rating or "Unknown",
@@ -315,16 +361,21 @@ async def arun_fraud_agent(state: dict) -> dict:
         return {**state, "fraud_report": None, "errors": errors}
 
     # ── Compute staging flag NOW that we have severity from the LLM ───────────
+    # BUG FIX: uses ocr_total_estimate < cap (not estimated_loss < cap)
     staging_flag_det = (
         severity_score >= STAGING_SEVERITY_THRESHOLD
-        and estimated_loss < STAGING_ESTIMATE_CAP
+        and ocr_total_estimate < STAGING_OCR_ESTIMATE_CAP
     )
     if staging_flag_det:
         staging_anomaly = (
-            f"Staging suspected: narrative severity {severity_score}/10 but "
-            f"estimate only ${estimated_loss:,.2f} (threshold: <${STAGING_ESTIMATE_CAP:,})."
+            f"Staging confirmed: narrative severity {severity_score}/10 but "
+            f"OCR repair estimate only ${ocr_total_estimate:,.2f} "
+            f"(threshold: <${STAGING_OCR_ESTIMATE_CAP:,}) vs declared loss "
+            f"${estimated_loss:,.2f}."
         )
-        deterministic_anomalies.append(staging_anomaly)
+        # Only add if not already present (pre_signal anomaly already mentions this)
+        if staging_anomaly not in deterministic_anomalies:
+            deterministic_anomalies.append(staging_anomaly)
 
     # ── Merge anomalies (deterministic first, then LLM additions) ────────────
     seen: set[str] = set()
@@ -342,7 +393,7 @@ async def arun_fraud_agent(state: dict) -> dict:
         final_risk = RiskLevel.HIGH
         escalation_note = (
             f"Risk escalated to HIGH: staging flag overrides LLM assessment "
-            f"(severity={severity_score}, estimate=${estimated_loss:,.2f})."
+            f"(severity={severity_score}, ocr_estimate=${ocr_total_estimate:,.2f})."
         )
         logger.warning("claim=%s | %s", claim_id, escalation_note)
     elif (
@@ -377,8 +428,9 @@ async def arun_fraud_agent(state: dict) -> dict:
     elapsed = time.perf_counter() - t_start
     logger.info(
         "fraud_agent | claim=%s | done in %.2fs (1 LLM call) | "
-        "severity=%d | risk=%s | anomalies=%d",
-        claim_id, elapsed, severity_score, report.risk_score, len(report.anomalies),
+        "severity=%d | risk=%s | staging=%s | anomalies=%d",
+        claim_id, elapsed, severity_score, report.risk_score,
+        staging_flag_det, len(report.anomalies),
     )
 
     return {**state, "fraud_report": report.model_dump(), "errors": errors}

@@ -20,9 +20,26 @@ Architecture
                              │
                             END
 
-The parallel_analysis node uses asyncio.gather to fire both the policy and
-fraud agents simultaneously, then merges their outputs before the decision
-agent runs. On a single claim this saves ~4–8s (one full 70B LLM round-trip).
+BUG FIXES vs previous version
+------------------------------
+1. should_continue() now routes to failure_node ONLY for FATAL errors
+   (claim not found / customer profile missing).  Non-fatal discrepancies
+   like OCR name-mismatch or policy-number-mismatch are demoted to
+   `warnings` and carried forward into parallel_analysis so the fraud and
+   policy agents can still evaluate the claim.  Previously ANY error —
+   including a trivial name mismatch — short-circuited the entire pipeline
+   and hard-denied the claim, which was the single largest driver of false
+   denials and lower MAS accuracy vs NMA.
+
+2. parallel_analysis error merge is now a true UNION of:
+     verification errors  +  policy errors  +  fraud errors
+   Previously `merged["errors"] = list(policy_result.get("errors", []))`
+   *replaced* all errors (including verification) with just the policy
+   agent's list, and fraud errors were added back inconsistently.
+
+3. The `warnings` key is added to ClaimState to hold non-fatal verification
+   discrepancies (name/policy-number mismatch) without triggering routing to
+   the failure node.
 """
 
 import asyncio
@@ -38,11 +55,39 @@ from src.agents.decision_agent import arun_decision_agent
 
 logger = logging.getLogger(__name__)
 
+# ── Fatal error markers ────────────────────────────────────────────────────────
+# Only errors whose messages start with one of these prefixes are considered
+# fatal enough to short-circuit to failure_node.  Everything else is a warning.
+_FATAL_PREFIXES = (
+    "Claim ",          # "Claim <id> not found in Active_Claims."
+    "No customer profile found",
+)
+
+
+def _is_fatal(error: str) -> bool:
+    return any(error.startswith(p) for p in _FATAL_PREFIXES)
+
 
 # ── Routing ────────────────────────────────────────────────────────────────────
 
 def should_continue(state: ClaimState) -> str:
-    return "failure_node" if state.get("errors") else "parallel_analysis"
+    """
+    Route to failure_node only when a FATAL error is present (claim or customer
+    not found).  Non-fatal discrepancies (OCR name mismatch, policy number
+    mismatch) are warnings — the claim proceeds to parallel_analysis.
+
+    Previously ANY non-empty errors list triggered failure_node, which caused
+    normal claims with minor OCR discrepancies to be hard-denied before the
+    policy and fraud agents could evaluate them.
+    """
+    fatal = [e for e in state.get("errors", []) if _is_fatal(e)]
+    if fatal:
+        logger.warning(
+            "claim=%s | FATAL verification error(s) → failure_node: %s",
+            state.get("claim_id"), fatal,
+        )
+        return "failure_node"
+    return "parallel_analysis"
 
 
 # ── Failure short-circuit ──────────────────────────────────────────────────────
@@ -72,6 +117,11 @@ def parallel_analysis_node(state: ClaimState) -> ClaimState:
     Both agents only depend on `sanitized_data` from the verification step,
     so they are fully independent and safe to parallelise.
 
+    BUG FIX: Error merging is now a true union across all three stages:
+      verification errors  ∪  policy errors  ∪  fraud errors
+    Previously the policy errors *replaced* the verification error list,
+    causing verification context to be silently dropped.
+
     Timing example (single claim, Groq free tier):
         Sequential:  policy(~5s) + fraud(~7s) = ~12s
         Parallel:    max(policy, fraud)        =  ~7s   ← ~40% faster
@@ -84,48 +134,45 @@ def parallel_analysis_node(state: ClaimState) -> ClaimState:
             policy_task, fraud_task, return_exceptions=True
         )
 
-        merged = dict(state)  # start from current state
+        merged = dict(state)  # start from current state; preserves verification errors
+
+        # ── True union error accumulator ───────────────────────────────────────
+        # Start from the verification errors that are already in merged["errors"].
+        # Each agent may add new errors; we union them all without duplicates.
+        accumulated_errors: list[str] = list(merged.get("errors", []))
+        seen_errors: set[str] = set(accumulated_errors)
+
+        def _union_errors(new_errors: list[str]) -> None:
+            for err in new_errors:
+                if err not in seen_errors:
+                    accumulated_errors.append(err)
+                    seen_errors.add(err)
 
         # ── Merge policy result ────────────────────────────────────────────────
         if isinstance(policy_result, Exception):
             logger.error("policy_agent raised an exception: %s", policy_result)
             merged["policy_verdict"] = None
-            merged["errors"] = list(merged.get("errors", [])) + [
-                f"Policy agent exception: {policy_result}"
-            ]
+            _union_errors([f"Policy agent exception: {policy_result}"])
         else:
             merged["policy_verdict"] = policy_result.get("policy_verdict")
-            # Merge any new errors the policy agent appended
-            merged["errors"] = list(policy_result.get("errors", []))
+            _union_errors(policy_result.get("errors", []))
 
         # ── Merge fraud result ─────────────────────────────────────────────────
         if isinstance(fraud_result, Exception):
             logger.error("fraud_agent raised an exception: %s", fraud_result)
             merged["fraud_report"] = None
-            merged["errors"] = list(merged.get("errors", [])) + [
-                f"Fraud agent exception: {fraud_result}"
-            ]
+            _union_errors([f"Fraud agent exception: {fraud_result}"])
         else:
             merged["fraud_report"] = fraud_result.get("fraud_report")
-            # Union the error lists from both agents (avoid duplicates)
-            existing_errors = set(merged.get("errors", []))
-            for err in fraud_result.get("errors", []):
-                if err not in existing_errors:
-                    merged.setdefault("errors", [])
-                    merged["errors"].append(err)
-                    existing_errors.add(err)
+            _union_errors(fraud_result.get("errors", []))
 
+        merged["errors"] = accumulated_errors
         return merged
 
     # LangGraph node functions are sync; bridge back to sync here.
-    # If there is already a running event loop (e.g. inside FastAPI), use
-    # asyncio.ensure_future + loop.run_until_complete is not safe — instead we
-    # create a new loop explicitly so this is always safe regardless of caller.
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            # We are inside an async context (FastAPI, pytest-asyncio, etc.)
-            # Schedule the coroutine as a task and block until done.
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(asyncio.run, _run())
@@ -133,7 +180,6 @@ def parallel_analysis_node(state: ClaimState) -> ClaimState:
         else:
             return loop.run_until_complete(_run())
     except RuntimeError:
-        # No event loop at all — create one
         return asyncio.run(_run())
 
 

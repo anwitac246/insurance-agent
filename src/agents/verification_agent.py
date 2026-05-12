@@ -3,16 +3,21 @@ verification_agent.py
 ---------------------
 Document verification agent — async-first, with sync wrapper for compatibility.
 
-v2 changes
-----------
-- REMOVED the LLM call for OCR parsing entirely. The OCR data stored in
-  Active_Claims.ocr_extraction is already a structured dict — there is
-  no unstructured text to "parse". Calling an LLM to echo back the same
-  key/value pairs wasted 1 LLM call per claim and was the single largest
-  source of unnecessary latency and rate-limit pressure.
-  The raw MongoDB values are now consumed directly via _raw_ocr().
+BUG FIXES vs previous version
+------------------------------
+1. Name mismatch and policy-number mismatch are now WARNINGS, not ERRORS.
+   They are stored in state["warnings"] and still surfaced to the decision
+   agent as context, but they no longer trigger should_continue() to route
+   the claim to failure_node.  Previously these minor OCR discrepancies
+   caused normal claims to be hard-denied at the verification stage,
+   which was the primary driver of false denials in the MAS.
 
-- LLM call count per claim: 1  →  0  (verification is now fully deterministic)
+2. Only truly fatal conditions — claim not found in Active_Claims, or
+   customer profile not found — are written to state["errors"], which
+   will trigger failure_node routing.
+
+3. The `warnings` list is added to the returned state so the graph's
+   new should_continue() and decision_agent can both see it.
 """
 
 from __future__ import annotations
@@ -67,12 +72,15 @@ async def arun_verification_agent(state: dict) -> dict:
     t0 = time.perf_counter()
     db = get_db()
     errors: list[str] = list(state.get("errors", []))
+    warnings: list[str] = list(state.get("warnings", []))
     claim_id: str = state.get("claim_id", "")
 
     claim = db["Active_Claims"].find_one({"claim_id": claim_id})
     if not claim:
+        # FATAL — claim does not exist at all
         return {
             **state,
+            "warnings": warnings,
             "errors": errors + [f"Claim {claim_id} not found in Active_Claims."],
         }
 
@@ -105,7 +113,11 @@ async def arun_verification_agent(state: dict) -> dict:
                 f"profile has '{stored_name}'."
             )
             discrepancies.append(msg)
-            errors.append(msg)
+            # BUG FIX: was errors.append(msg) → now a WARNING, not a fatal error.
+            # A name mismatch is an OCR quality issue, not a reason to deny the
+            # claim outright before policy and fraud agents have evaluated it.
+            warnings.append(msg)
+            logger.warning("claim=%s | non-fatal discrepancy: %s", claim_id, msg)
 
         if not policy_match:
             msg = (
@@ -113,13 +125,16 @@ async def arun_verification_agent(state: dict) -> dict:
                 f"profile has '{stored_policy[:8].upper()}'."
             )
             discrepancies.append(msg)
-            errors.append(msg)
+            # BUG FIX: same — demote to warning.
+            warnings.append(msg)
+            logger.warning("claim=%s | non-fatal discrepancy: %s", claim_id, msg)
     else:
+        # FATAL — no customer profile means we cannot look up the policy
         msg = (
             f"No customer profile found for customer_id '{claim['customer_id']}'."
         )
         discrepancies.append(msg)
-        errors.append(msg)
+        errors.append(msg)   # this IS fatal
 
     verification_output = VerificationOutput(
         ocr=parsed_ocr,
@@ -137,13 +152,19 @@ async def arun_verification_agent(state: dict) -> dict:
         "estimated_loss": float(claim.get("estimated_loss", 0)),
         "repair_shop": parsed_ocr.RepairShopName,
         "loss_date": parsed_ocr.LossDate,
+        # BUG FIX (used by fraud_agent for staging detection):
+        # ocr_total_estimate is the figure extracted from the repair document.
+        # For staged accidents seed_data sets this to $200 while estimated_loss
+        # is $8k–$20k.  The fraud agent must compare these two values, so both
+        # must be present in sanitized_data.
         "ocr_total_estimate": parsed_ocr.TotalEstimate,
     }
 
     elapsed = time.perf_counter() - t0
     logger.info(
-        "verification_agent | claim=%s | name_match=%s | policy_match=%s | %.2fs (0 LLM calls)",
-        claim_id, name_match, policy_match, elapsed,
+        "verification_agent | claim=%s | name_match=%s | policy_match=%s | "
+        "warnings=%d | errors=%d | %.2fs (0 LLM calls)",
+        claim_id, name_match, policy_match, len(warnings), len(errors), elapsed,
     )
 
     return {
@@ -154,6 +175,7 @@ async def arun_verification_agent(state: dict) -> dict:
         "customer_profile": {
             k: v for k, v in (customer or {}).items() if k != "_id"
         },
+        "warnings": warnings,
         "errors": errors,
     }
 
