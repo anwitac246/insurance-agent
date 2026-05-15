@@ -97,8 +97,10 @@ _PROMPT = ChatPromptTemplate.from_messages([
         "  • aggregate_breach_signal is YES (loss exceeds remaining policy limit)\n"
         "  • collusion_signal is YES (repair shop is in fraud network)\n"
         "  • staging_signal is YES (catastrophic narrative but tiny repair estimate)\n"
-        "  • A policy exclusion clause directly and verbatim applies to the narrative\n"
+        "  • A policy exclusion clause semantically matches the incident narrative\n"
         "  • The incident type is not covered by the policy coverage scope\n\n"
+        "GENERAL RULES:\n"
+        "  - Assume good faith. Do NOT invent fraud or exclusions if no explicit signal is triggered. Default to approval for standard claims.\n\n"
         "PAYOUT FORMULA: min(estimated_loss - deductible, remaining_limit)\n"
         "Set payout to 0.0 for any denied claim.\n\n"
         "CRITICAL OUTPUT FORMAT:\n"
@@ -180,7 +182,8 @@ def _compute_signals(context: dict) -> dict:
     aggregate_breach_signal = estimated_loss > remaining_limit
 
     # Signal: collusion ring (flagged repair shop)
-    collusion_signal = COLLUSION_SHOP.lower() in repair_shop.lower()
+    main_shop_name = COLLUSION_SHOP.split()[0].lower()
+    collusion_signal = main_shop_name in repair_shop.lower()
 
     # Signal: staged accident (high narrative loss, tiny OCR estimate)
     staging_signal = ocr_estimate < 1000 and estimated_loss >= 5000
@@ -242,8 +245,7 @@ async def arun_nma_agent(context: dict) -> NMAOutput:
             # If any hard-denial signal fired, force denial regardless of LLM output.
             # This prevents the LLM from approving structurally invalid claims.
             must_deny = (
-                signals["_frequent_claims_signal"]
-                or signals["_aggregate_breach_signal"]
+                signals["_aggregate_breach_signal"]
                 or signals["_collusion_signal"]
                 or signals["_staging_signal"]
             )
@@ -259,6 +261,12 @@ async def arun_nma_agent(context: dict) -> NMAOutput:
                 fraud_score = max(1, min(10, int(float(raw.fraud_risk_score))))
             except (ValueError, TypeError):
                 fraud_score = 5  # neutral fallback
+
+            # ── Post-LLM Fraud Escalation ────────────────────────────────────
+            if signals["_collusion_signal"] or signals["_staging_signal"]:
+                fraud_score = max(fraud_score, 9)
+            elif signals["_frequent_claims_signal"]:
+                fraud_score = max(fraud_score, 5)
 
             return NMAOutput(
                 fraud_risk_score=fraud_score,

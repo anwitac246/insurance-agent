@@ -129,6 +129,7 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
         "       Emit this as `narrative_severity_score` (integer).\n"
         "  2. Synthesize ALL provided signals into a final fraud risk assessment.\n\n"
         "Rules:\n"
+        "  - Assume good faith. Do NOT invent fraud if no explicit signal is triggered. Default to Low/Medium for standard claims.\n"
         "  - Your anomalies list MUST include every item from "
         "'Pre-computed Deterministic Anomalies' verbatim.\n"
         "  - For frequent_claims_flag, collusion_flag, and staging_flag output "
@@ -280,7 +281,10 @@ async def arun_fraud_agent(state: dict) -> dict:
         if r.get("claim_status") in ("Denied", "Fraud_Flagged")
     )
     frequent_claims_flag_det = denied_flagged_count >= FREQUENT_CLAIM_THRESHOLD
-    collusion_flag_det = COLLUSION_SHOP.lower() in repair_shop.lower()
+    
+    # BUG FIX: dynamic collusion shop matching
+    main_shop_name = COLLUSION_SHOP.split()[0].lower()
+    collusion_flag_det = main_shop_name in repair_shop.lower()
 
     cutoff_date = (
         datetime.now() - timedelta(days=VELOCITY_WINDOW_DAYS)
@@ -405,6 +409,12 @@ async def arun_fraud_agent(state: dict) -> dict:
             "Risk escalated to MEDIUM: frequent claims or collusion flag present "
             "but LLM returned LOW."
         )
+        logger.warning("claim=%s | %s", claim_id, escalation_note)
+
+    # BUG FIX: clamp LLM self-escalation
+    if final_risk == RiskLevel.HIGH and not (staging_flag_det or collusion_flag_det or frequent_claims_flag_det or high_risk_high_value):
+        final_risk = RiskLevel.MEDIUM
+        escalation_note = "Risk clamped to MEDIUM: LLM escalated to HIGH but no deterministic signals fired."
         logger.warning("claim=%s | %s", claim_id, escalation_note)
 
     if escalation_note:

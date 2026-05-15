@@ -128,13 +128,13 @@ _PROMPT = ChatPromptTemplate.from_messages([
         "retrieved policy and provide detailed reasoning.\n\n"
         "Your response must follow these three numbered steps in coverage_reasoning:\n"
         "  1. Does coverage_scope include this incident type? Quote the relevant clause.\n"
-        "  2. Does any exclusion apply verbatim to this narrative? "
-        "     Quote the EXACT exclusion text if applicable — copy it word-for-word.\n"
+        "  2. Does any exclusion conceptually match this narrative? "
+        "     Quote the EXACT exclusion text from the Exclusions list if applicable.\n"
         "  3. Is estimated_loss within remaining_limit? State the arithmetic.\n\n"
         "For exclusion_reason:\n"
-        "  - If an exclusion directly applies: copy the exact phrase from the Exclusions list.\n"
+        "  - If an exclusion semantically applies: copy the exact phrase from the Exclusions list.\n"
         "  - If no exclusion applies: leave it as an empty string.\n"
-        "  - NEVER paraphrase or infer. Either quote verbatim or leave empty.",
+        "  - Use semantic reasoning to link the narrative to the formal clause, but the quote must be exact.",
     ),
     (
         "human",
@@ -318,13 +318,20 @@ async def arun_policy_agent(state: dict) -> dict:
     # ── Semantic exclusion similarity (ADVISORY only) ─────────────────────────
     similarity = 0.0
     try:
-        exclusion_vec = await loop.run_in_executor(None, _encode, exclusions_text)
-        similarity = float(
-            cosine_similarity(
-                narrative_vec.reshape(1, -1),
-                exclusion_vec.reshape(1, -1),
-            )[0][0]
-        )
+        # BUG FIX: Split exclusions into individual clauses to prevent dilution
+        clauses = [c.strip() for c in exclusions_text.split("\n") if c.strip()]
+        if not clauses:
+            clauses = [exclusions_text]
+
+        def _encode_batch():
+            import numpy as np
+            # Batch encode is vastly faster than doing it sequentially inside a loop
+            return np.array(_get_embedder().encode(clauses))
+
+        clauses_matrix = await loop.run_in_executor(None, _encode_batch)
+        
+        sims = cosine_similarity(narrative_vec.reshape(1, -1), clauses_matrix)
+        similarity = float(sims.max())
         logger.debug(
             "claim=%s | exclusion similarity=%.4f (threshold=%.2f)",
             claim_id, similarity, EXCLUSION_SIMILARITY_THRESHOLD,

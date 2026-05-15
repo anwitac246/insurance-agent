@@ -35,6 +35,7 @@ from evals.metrics import (
     stp_rate,
     latency_stats,
 )
+from evals.run_evals import _run_llm_judge
 
 logging.basicConfig(
     level=logging.INFO,
@@ -182,6 +183,13 @@ async def run_evals_nma():
                     "incident_covered": res.incident_covered,
                     "exclusion_triggered": res.exclusion_triggered,
                     "exclusion_reason": res.exclusion_reason,
+                    "coverage_scope": ctx.get("policy", {}).get("coverage_scope", ""),
+                    "exclusions": ctx.get("policy", {}).get("exclusions", ""),
+                    "policy_limit": ctx.get("policy", {}).get("policy_limit", 0),
+                    "aggregate_limit": ctx.get("policy", {}).get("aggregate_limit", 0),
+                    "deductible": ctx.get("policy", {}).get("deductible", 0),
+                    "total_historical_payout": ctx.get("policy", {}).get("total_historical_payout", 0),
+                    "remaining_limit": float(ctx.get("policy", {}).get("aggregate_limit", 0)) - float(ctx.get("policy", {}).get("total_historical_payout", 0)),
                 },
                 "errors": [],
             }
@@ -216,6 +224,8 @@ async def run_evals_nma():
     lat_metrics = latency_stats(latencies)
     breakdown = _scenario_breakdown(results, ground_truth)
 
+    judge_metrics = _run_llm_judge(results, ground_truth, max_sample=5)
+
     run_id = f"NMA_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     report = {
@@ -233,7 +243,7 @@ async def run_evals_nma():
         # These keys keep the reporter happy when building comparison charts
         "consistency": {"mean_consistency": 1.0, "per_claim": {}, "k_runs": 1},
         "step_completeness": {},
-        "llm_judge": {},
+        "llm_judge": judge_metrics,
         "chaos": {},
     }
 
