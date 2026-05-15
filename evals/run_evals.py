@@ -93,7 +93,7 @@ from evals.metrics import (
 )
 from evals.chaos import ChaosHarness
 from evals.reporter import build_report_chart, save_json_report
-from src.tools.groq_client import adaptive_sleep
+from src.tools.llm_client import adaptive_sleep
 
 logging.basicConfig(
     level=logging.INFO,

@@ -10,7 +10,7 @@ use. Without pre-warming, the FIRST claim processed by a fresh process pays this
 penalty. Pre-warming loads the model at import time so every request after that
 hits the LRU cache immediately.
 
-The Groq key rotation manager is also initialized at import time for the same reason.
+The Ollama key rotation manager is also initialized at import time for the same reason.
 """
 
 import sys
@@ -32,12 +32,12 @@ def _prewarm():
         logger.warning("SentenceTransformer pre-warm failed (non-fatal): %s", exc)
 
     try:
-        from src.tools.groq_client import _get_manager
-        logger.info("Initializing Groq key rotation manager…")
+        from src.tools.llm_client import _get_manager
+        logger.info("Initializing Ollama key rotation manager…")
         _get_manager()
-        logger.info("Groq client ready.")
+        logger.info("Ollama client ready.")
     except Exception as exc:
-        logger.warning("Groq client pre-warm failed (non-fatal): %s", exc)
+        logger.warning("Ollama client pre-warm failed (non-fatal): %s", exc)
 
 
 _prewarm()

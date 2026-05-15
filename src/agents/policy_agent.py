@@ -48,7 +48,7 @@ from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from src.tools.groq_client import get_async_llm, record_429, record_success
+from src.tools.llm_client import get_async_llm, record_429, record_success
 from src.tools.mongo_client import get_pinecone_index
 
 # BUG FIX: threshold kept but now only used as a SECONDARY signal, not a blocker

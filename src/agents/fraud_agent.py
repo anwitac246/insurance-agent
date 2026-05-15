@@ -42,7 +42,7 @@ from typing import Optional
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from src.tools.groq_client import (
+from src.tools.llm_client import (
     get_async_llm,
     record_429,
     record_success,

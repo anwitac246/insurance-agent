@@ -25,7 +25,7 @@ load_dotenv()
 from nma_src.tools.context_fetcher import fetch_nma_context
 from nma_src.agents.nma_agent import arun_nma_agent
 from src.tools.mongo_client import get_db
-from src.tools.groq_client import adaptive_sleep
+from src.tools.llm_client import adaptive_sleep
 
 from evals.reporter import save_json_report, build_report_chart
 from evals.ground_truth import load_ground_truth, GTRecord

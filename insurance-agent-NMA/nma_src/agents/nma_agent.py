@@ -14,7 +14,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from nma_src.schemas.nma_schema import NMAOutput
-from src.tools.groq_client import get_async_llm, record_429, record_success
+from src.tools.llm_client import get_async_llm, record_429, record_success
 
 logger = logging.getLogger(__name__)
 
