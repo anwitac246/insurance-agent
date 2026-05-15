@@ -73,6 +73,12 @@ class _NMAOutputRaw(BaseModel):
 def _parse_bool(val) -> bool:
     return str(val).lower().strip() in ("yes", "true", "1")
 
+def _parse_float(val: str) -> float:
+    try:
+        return float(str(val).replace('$', '').replace(',', '').strip())
+    except ValueError:
+        clean_val = "".join(c for c in str(val) if c.isdigit() or c in ".-")
+        return float(clean_val) if clean_val else 0.0
 
 # ── Prompt ─────────────────────────────────────────────────────────────────────
 
@@ -245,10 +251,7 @@ async def arun_nma_agent(context: dict) -> NMAOutput:
             approved_llm = _parse_bool(raw.approved)
             approved_final = approved_llm and not must_deny
 
-            try:
-                payout_raw = float(raw.final_payout)
-            except (ValueError, TypeError):
-                payout_raw = 0.0
+            payout_raw = _parse_float(raw.final_payout)
 
             final_payout = payout_raw if approved_final else 0.0
 

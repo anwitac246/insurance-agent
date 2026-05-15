@@ -86,6 +86,14 @@ def _parse_bool(val: str) -> bool:
     return str(val).lower().strip() in ("yes", "true", "1")
 
 
+def _parse_float(val: str) -> float:
+    try:
+        return float(str(val).replace('$', '').replace(',', '').strip())
+    except ValueError:
+        clean_val = "".join(c for c in str(val) if c.isdigit() or c in ".-")
+        return float(clean_val) if clean_val else 0.0
+
+
 # ── Prompt ─────────────────────────────────────────────────────────────────────
 
 _prompt = ChatPromptTemplate.from_messages([
@@ -150,7 +158,7 @@ async def _ainvoke(inputs: dict) -> DecisionOutput:
 
             return DecisionOutput(
                 approved=_parse_bool(raw.approved),
-                final_payout=float(raw.final_payout),
+                final_payout=_parse_float(raw.final_payout),
                 denial_reason=raw.denial_reason,
                 step_by_step_reasoning=raw.step_by_step_reasoning,
             )
