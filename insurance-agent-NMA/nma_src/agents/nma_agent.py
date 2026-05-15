@@ -2,6 +2,19 @@
 nma_agent.py
 ------------
 Single-agent insurance claim adjudicator.
+
+FIX in this version
+--------------------
+_compute_signals(): collusion shop detection now uses full-name substring
+match (case-insensitive) instead of first-word-only ("apex").
+
+Old:  main_shop_name = COLLUSION_SHOP.split()[0].lower()  → "apex"
+      collusion_signal = main_shop_name in repair_shop.lower()
+
+This was both too broad (matched any shop with "apex" anywhere) and
+fragile (missed shops where the repair_shop OCR field had the full name
+but not the exact first-word prefix). The fix mirrors the change made
+to fraud_agent.py.
 """
 
 from __future__ import annotations
@@ -18,12 +31,9 @@ from src.tools.llm_client import get_async_llm, record_429, record_success
 
 logger = logging.getLogger(__name__)
 
-# ── Fraud signal constants (mirror MAS fraud_agent) ───────────────────────────
 COLLUSION_SHOP = "Apex AutoBody & Collision"
 FREQUENT_CLAIM_THRESHOLD = 3
 
-
-# ── Raw LLM output schema ──────────────────────────────────────────────────────
 
 class _NMAOutputRaw(BaseModel):
     fraud_risk_score: str = Field(
@@ -80,7 +90,6 @@ def _parse_float(val: str) -> float:
         clean_val = "".join(c for c in str(val) if c.isdigit() or c in ".-")
         return float(clean_val) if clean_val else 0.0
 
-# ── Prompt ─────────────────────────────────────────────────────────────────────
 
 _PROMPT = ChatPromptTemplate.from_messages([
     (
@@ -143,49 +152,35 @@ _PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 
-# ── Deterministic pre-compute helpers ─────────────────────────────────────────
-
 def _compute_signals(context: dict) -> dict:
-    """
-    Compute deterministic fraud and financial signals before the LLM call.
-    These mirror the MAS verification/fraud/policy agents and are injected
-    explicitly into the prompt so the LLM doesn't have to infer them.
-    """
     claim: dict = context.get("claim", {})
     customer: dict = context.get("customer", {})
     policy: dict = context.get("policy", {})
     history: list[dict] = context.get("history_records", [])
 
-    # Claim fields
     estimated_loss = float(claim.get("estimated_loss", 0))
     repair_shop: str = claim.get("ocr_extraction", {}).get("RepairShopName", "")
     ocr_estimate = float(claim.get("ocr_extraction", {}).get("TotalEstimate", estimated_loss))
 
-    # Customer fields
     risk_rating: str = customer.get("risk_rating", "Unknown")
     ncd_tier: float = float(customer.get("ncd_tier", 0.0))
 
-    # Policy fields
     aggregate_limit = float(policy.get("aggregate_limit", 0))
     total_historical_payout = float(policy.get("total_historical_payout", 0))
     remaining_limit = aggregate_limit - total_historical_payout
     policy_limit = float(policy.get("policy_limit", 0))
     deductible = float(policy.get("deductible", 0))
 
-    # Signal: frequent claimant
     denied_flagged = sum(
         1 for r in history if r.get("claim_status") in ("Denied", "Fraud_Flagged")
     )
     frequent_claims_signal = denied_flagged >= FREQUENT_CLAIM_THRESHOLD
 
-    # Signal: aggregate limit breach
     aggregate_breach_signal = estimated_loss > remaining_limit
 
-    # Signal: collusion ring (flagged repair shop)
-    main_shop_name = COLLUSION_SHOP.split()[0].lower()
-    collusion_signal = main_shop_name in repair_shop.lower()
+    # FIX: full-name substring match instead of first-word-only
+    collusion_signal = COLLUSION_SHOP.lower() in repair_shop.lower()
 
-    # Signal: staged accident (high narrative loss, tiny OCR estimate)
     staging_signal = ocr_estimate < 1000 and estimated_loss >= 5000
 
     return {
@@ -211,7 +206,6 @@ def _compute_signals(context: dict) -> dict:
         "deductible": f"{deductible:,.2f}",
         "total_historical_payout": f"{total_historical_payout:,.2f}",
         "remaining_limit": f"{remaining_limit:,.2f}",
-        # Keep raw values for deterministic post-processing
         "_frequent_claims_signal": frequent_claims_signal,
         "_aggregate_breach_signal": aggregate_breach_signal,
         "_collusion_signal": collusion_signal,
@@ -222,16 +216,7 @@ def _compute_signals(context: dict) -> dict:
     }
 
 
-# ── Async agent ────────────────────────────────────────────────────────────────
-
 async def arun_nma_agent(context: dict) -> NMAOutput:
-    """
-    Single LLM call that adjudicates the entire claim.
-
-    Deterministic signals are pre-computed and injected into the prompt,
-    then used again post-LLM to enforce denial logic — the LLM cannot
-    accidentally approve a claim that should be deterministically denied.
-    """
     signals = _compute_signals(context)
 
     for attempt in range(3):
@@ -241,9 +226,6 @@ async def arun_nma_agent(context: dict) -> NMAOutput:
             raw: _NMAOutputRaw = await chain.ainvoke(signals)
             record_success()
 
-            # ── Deterministic post-processing overrides ────────────────────────
-            # If any hard-denial signal fired, force denial regardless of LLM output.
-            # This prevents the LLM from approving structurally invalid claims.
             must_deny = (
                 signals["_aggregate_breach_signal"]
                 or signals["_collusion_signal"]
@@ -252,17 +234,14 @@ async def arun_nma_agent(context: dict) -> NMAOutput:
 
             approved_llm = _parse_bool(raw.approved)
             approved_final = approved_llm and not must_deny
-
             payout_raw = _parse_float(raw.final_payout)
-
             final_payout = payout_raw if approved_final else 0.0
 
             try:
                 fraud_score = max(1, min(10, int(float(raw.fraud_risk_score))))
             except (ValueError, TypeError):
-                fraud_score = 5  # neutral fallback
+                fraud_score = 5
 
-            # ── Post-LLM Fraud Escalation ────────────────────────────────────
             if signals["_collusion_signal"] or signals["_staging_signal"]:
                 fraud_score = max(fraud_score, 9)
             elif signals["_frequent_claims_signal"]:

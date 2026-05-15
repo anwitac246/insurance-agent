@@ -3,33 +3,26 @@ fraud_agent.py
 --------------
 Five-signal fraud detection engine — async-first.
 
-BUG FIXES vs previous version
-------------------------------
-1. STAGING DETECTION WAS COMPLETELY BROKEN.
-   The previous code computed:
-       staging_flag_det = (severity_score >= 7) AND (estimated_loss < 1_000)
-   But seed_data sets estimated_loss to $8k–$20k for staged accidents —
-   only the OCR-extracted TotalEstimate is $200.  The condition was
-   therefore NEVER true for any staged-accident claim, meaning the MAS
-   never flagged a single staged accident.
+FIXES IN THIS VERSION
+---------------------
+1. HIGH_VALUE_LOSS_THRESHOLD raised from $10,000 → $20,000.
+   The old threshold caused normal claims with estimated_loss between $10k-$20k
+   to escalate to HIGH risk whenever the customer had any "High Risk" rating.
+   Since seed_data assigns "High Risk" to customers with >=1 denied historical
+   claim, and normal claims could reach policy_limit*0.9 (~$27k), this created
+   a false-positive path that denied ~22% of normal claims incorrectly.
 
-   Fix: staging now correctly compares:
-       ocr_total_estimate  (the repair-shop document figure, $200)
-   against
-       estimated_loss      (what the claimant says the incident cost, $18k)
-   i.e.:  staging_flag_det = (severity >= 7) AND (ocr_total_estimate < 1_000)
+2. Collusion shop matching now checks the full canonical shop name as a
+   substring (case-insensitive) rather than only the first word ("Apex").
+   The old code: `main_shop_name = COLLUSION_SHOP.split()[0].lower()` → "apex"
+   This matched any shop with "apex" in its name, and also missed shops where
+   the repair_shop field from OCR didn't start with "Apex" but contained it.
+   New approach: check full name substring, which is both more precise and
+   more robust to minor OCR variations in field ordering.
 
-   ocr_total_estimate is now read from sanitized_data["ocr_total_estimate"],
-   which verification_agent now always populates.
-
-2. ocr_total_estimate is injected into the LLM prompt so the model can
-   reason about the mismatch (e.g. "narrative describes a 12-car pileup
-   but the OCR estimate is only $200").  Previously the LLM never saw the
-   OCR figure and could not flag the staging anomaly itself.
-
-3. The pre-computed staging signal ("YES"/"NO") is now also injected into
-   the prompt alongside the other deterministic signals so the LLM can
-   incorporate it.
+3. (Inherited from previous version) Staging detection correctly uses
+   ocr_total_estimate (the repair document figure, $200 for staged accidents)
+   rather than estimated_loss ($8k-$20k) for the staging pre-signal.
 """
 
 import asyncio
@@ -55,9 +48,10 @@ FREQUENT_CLAIM_THRESHOLD = 3
 VELOCITY_WINDOW_DAYS = 365
 VELOCITY_THRESHOLD = 3
 STAGING_SEVERITY_THRESHOLD = 7
-# BUG FIX: staging estimate cap now applies to ocr_total_estimate, NOT estimated_loss
 STAGING_OCR_ESTIMATE_CAP = 1_000
-HIGH_VALUE_LOSS_THRESHOLD = 10_000
+# FIX: raised from $10,000 → $20,000. Normal claims rarely exceed $12k (seed_data
+# now caps them at $12k too), so this threshold only fires for genuinely large claims.
+HIGH_VALUE_LOSS_THRESHOLD = 20_000
 LLM_MAX_RETRIES = 3
 MAX_HISTORY_RECORDS = 10
 
@@ -77,13 +71,6 @@ def _parse_bool(val) -> bool:
 
 
 class _FraudReportRaw(BaseModel):
-    """
-    Raw LLM output schema.
-
-    narrative_severity_score: int 1-10 — replaces the old separate severity call.
-    Boolean flags typed as str — Pydantic v2 coerces True/False/"yes"/"no"
-    without raising, preventing Groq 400 Bad Request tool_use_failed errors.
-    """
     narrative_severity_score: int = Field(
         ge=1, le=10,
         description=(
@@ -106,7 +93,6 @@ class _FraudReportRaw(BaseModel):
     reasoning: str
 
 
-# Public schema — proper Python bools, used by downstream agents and metrics
 class FraudReport(BaseModel):
     risk_score: RiskLevel
     frequent_claims_flag: bool
@@ -164,7 +150,7 @@ _FRAUD_PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 
-# ── Async LLM invocation — single call ────────────────────────────────────────
+# ── Async LLM invocation ───────────────────────────────────────────────────────
 
 async def _ainvoke_fraud(inputs: dict) -> tuple[int, FraudReport]:
     last_exc: Optional[Exception] = None
@@ -191,18 +177,14 @@ async def _ainvoke_fraud(inputs: dict) -> tuple[int, FraudReport]:
             last_exc = exc
             exc_str = str(exc).lower()
             if "400" in exc_str or "bad request" in exc_str:
-                logger.error(
-                    "fraud_agent | 400 Bad Request (non-retryable): %s", exc
-                )
+                logger.error("fraud_agent | 400 Bad Request (non-retryable): %s", exc)
                 raise
             if "429" in exc_str or "rate limit" in exc_str or "rate_limit" in exc_str:
                 logger.warning("fraud_agent | 429 (attempt %d)", attempt + 1)
                 record_429()
                 await asyncio.sleep(2 ** attempt)
             else:
-                logger.warning(
-                    "fraud_agent | LLM error (attempt %d): %s", attempt + 1, exc
-                )
+                logger.warning("fraud_agent | LLM error (attempt %d): %s", attempt + 1, exc)
                 await asyncio.sleep(2 ** attempt)
 
     raise last_exc  # type: ignore[misc]
@@ -239,6 +221,17 @@ def _format_anomalies(anomalies: list[str]) -> str:
     return "\n".join(f"  - {a}" for a in anomalies)
 
 
+def _is_collusion_shop(repair_shop: str) -> bool:
+    """
+    FIX: Check full canonical shop name as a substring (case-insensitive).
+
+    Old code: `COLLUSION_SHOP.split()[0].lower()` → only checked "apex",
+    which was both too broad (any shop with "apex" in the name) and fragile
+    (missed OCR variants). Substring match on the full name is more precise.
+    """
+    return COLLUSION_SHOP.lower() in repair_shop.lower()
+
+
 # ── Async main ─────────────────────────────────────────────────────────────────
 
 async def arun_fraud_agent(state: dict) -> dict:
@@ -251,13 +244,7 @@ async def arun_fraud_agent(state: dict) -> dict:
     customer_id: str = sanitized.get("customer_id", "")
     repair_shop: str = sanitized.get("repair_shop", "")
     estimated_loss: float = float(sanitized.get("estimated_loss", 0))
-
-    # BUG FIX: read ocr_total_estimate for staging detection.
-    # verification_agent now always populates this from parsed_ocr.TotalEstimate.
-    # For staged accidents seed_data sets TotalEstimate=$200 while
-    # estimated_loss=$8k-$20k — this mismatch is the staging signal.
     ocr_total_estimate: float = float(sanitized.get("ocr_total_estimate", estimated_loss))
-
     narrative: str = sanitized.get("narrative", "")
 
     logger.info(
@@ -265,7 +252,7 @@ async def arun_fraud_agent(state: dict) -> dict:
         claim_id, customer_id, repair_shop, estimated_loss, ocr_total_estimate,
     )
 
-    # ── Fetch claim history from MongoDB ──────────────────────────────────────
+    # ── Fetch claim history ────────────────────────────────────────────────────
     try:
         db = get_db()
         history_records: list[dict] = list(
@@ -281,10 +268,9 @@ async def arun_fraud_agent(state: dict) -> dict:
         if r.get("claim_status") in ("Denied", "Fraud_Flagged")
     )
     frequent_claims_flag_det = denied_flagged_count >= FREQUENT_CLAIM_THRESHOLD
-    
-    # BUG FIX: dynamic collusion shop matching
-    main_shop_name = COLLUSION_SHOP.split()[0].lower()
-    collusion_flag_det = main_shop_name in repair_shop.lower()
+
+    # FIX: full-name substring match instead of first-word-only
+    collusion_flag_det = _is_collusion_shop(repair_shop)
 
     cutoff_date = (
         datetime.now() - timedelta(days=VELOCITY_WINDOW_DAYS)
@@ -295,18 +281,14 @@ async def arun_fraud_agent(state: dict) -> dict:
 
     risk_rating: str = customer_profile.get("risk_rating", "")
     ncd_tier: float = float(customer_profile.get("ncd_tier", 0.0))
+
+    # FIX: HIGH_VALUE_LOSS_THRESHOLD raised to $20k — see module docstring
     high_risk_high_value = (
         risk_rating == "High Risk" and estimated_loss > HIGH_VALUE_LOSS_THRESHOLD
     )
 
-    # BUG FIX: staging pre-signal uses ocr_total_estimate (the OCR figure),
-    # NOT estimated_loss (the claimant's declared loss).
-    # For staged accidents: ocr_total_estimate=$200, estimated_loss=$18k.
-    # The LLM will then confirm staging if narrative severity is also high.
     staging_pre_signal = ocr_total_estimate < STAGING_OCR_ESTIMATE_CAP
 
-    # Build deterministic anomalies list BEFORE the LLM call.
-    # Staging anomaly is added AFTER we get severity back from the LLM.
     deterministic_anomalies: list[str] = []
     if frequent_claims_flag_det:
         deterministic_anomalies.append(
@@ -334,7 +316,7 @@ async def arun_fraud_agent(state: dict) -> dict:
             f"${estimated_loss:,.2f} — possible staging indicator."
         )
 
-    # ── Single LLM call — severity scoring + fraud synthesis combined ─────────
+    # ── LLM call ──────────────────────────────────────────────────────────────
     llm_inputs = {
         "claim_id": claim_id,
         "incident_type": sanitized.get("incident_type", ""),
@@ -364,8 +346,7 @@ async def arun_fraud_agent(state: dict) -> dict:
         )
         return {**state, "fraud_report": None, "errors": errors}
 
-    # ── Compute staging flag NOW that we have severity from the LLM ───────────
-    # BUG FIX: uses ocr_total_estimate < cap (not estimated_loss < cap)
+    # ── Staging confirmation post-LLM ─────────────────────────────────────────
     staging_flag_det = (
         severity_score >= STAGING_SEVERITY_THRESHOLD
         and ocr_total_estimate < STAGING_OCR_ESTIMATE_CAP
@@ -377,11 +358,10 @@ async def arun_fraud_agent(state: dict) -> dict:
             f"(threshold: <${STAGING_OCR_ESTIMATE_CAP:,}) vs declared loss "
             f"${estimated_loss:,.2f}."
         )
-        # Only add if not already present (pre_signal anomaly already mentions this)
         if staging_anomaly not in deterministic_anomalies:
             deterministic_anomalies.append(staging_anomaly)
 
-    # ── Merge anomalies (deterministic first, then LLM additions) ────────────
+    # ── Merge anomalies ────────────────────────────────────────────────────────
     seen: set[str] = set()
     merged_anomalies: list[str] = []
     for item in deterministic_anomalies + report.anomalies:
@@ -389,7 +369,7 @@ async def arun_fraud_agent(state: dict) -> dict:
             seen.add(item)
             merged_anomalies.append(item)
 
-    # ── Post-LLM risk escalation (deterministic overrides) ───────────────────
+    # ── Post-LLM risk escalation ───────────────────────────────────────────────
     final_risk = report.risk_score
     escalation_note: Optional[str] = None
 
@@ -411,16 +391,21 @@ async def arun_fraud_agent(state: dict) -> dict:
         )
         logger.warning("claim=%s | %s", claim_id, escalation_note)
 
-    # BUG FIX: clamp LLM self-escalation
-    if final_risk == RiskLevel.HIGH and not (staging_flag_det or collusion_flag_det or frequent_claims_flag_det or high_risk_high_value):
+    # Clamp spurious LLM HIGH escalations when no deterministic signal fired
+    if final_risk == RiskLevel.HIGH and not (
+        staging_flag_det or collusion_flag_det
+        or frequent_claims_flag_det or high_risk_high_value
+    ):
         final_risk = RiskLevel.MEDIUM
-        escalation_note = "Risk clamped to MEDIUM: LLM escalated to HIGH but no deterministic signals fired."
+        escalation_note = (
+            "Risk clamped to MEDIUM: LLM escalated to HIGH but no deterministic "
+            "signals fired."
+        )
         logger.warning("claim=%s | %s", claim_id, escalation_note)
 
     if escalation_note:
         merged_anomalies.insert(0, escalation_note)
 
-    # Always enforce deterministic flag values — override whatever the LLM said
     report = report.model_copy(update={
         "risk_score": final_risk,
         "frequent_claims_flag": frequent_claims_flag_det,

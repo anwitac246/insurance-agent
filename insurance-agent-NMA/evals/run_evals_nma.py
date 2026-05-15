@@ -2,6 +2,20 @@
 run_evals_nma.py
 ----------------
 Evaluation harness for the NMA (single-agent) system.
+
+Speed improvements in this version
+------------------------------------
+- INTER_CLAIM_DELAY reduced from 3.0s → 0.0s (Ollama is local, no rate limits).
+- Claims are now processed in concurrent batches (CONCURRENCY=5) using
+  asyncio.gather(), matching the MAS eval runner's approach.
+  Each NMA claim fires 1 LLM call vs the MAS's 3, so NMA concurrency headroom
+  is higher — set CONCURRENCY=8 if your GPU has headroom.
+
+Accuracy fix
+------------
+- _compute_signals(): collusion shop match now uses full-name substring
+  (case-insensitive) instead of first-word-only ("apex"), matching the fix
+  applied to fraud_agent.py.
 """
 
 import sys
@@ -25,7 +39,6 @@ load_dotenv()
 from nma_src.tools.context_fetcher import fetch_nma_context
 from nma_src.agents.nma_agent import arun_nma_agent
 from src.tools.mongo_client import get_db
-from src.tools.llm_client import adaptive_sleep
 
 from evals.reporter import save_json_report, build_report_chart
 from evals.ground_truth import load_ground_truth, GTRecord
@@ -44,17 +57,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Seconds to sleep between claims — each NMA claim fires 1 LLM call
-# (half the MAS rate, which fires 2 in parallel), so 3s is safe on free tier.
-INTER_CLAIM_DELAY = 3.0
+# FIX: 0s delay — Ollama is local, no rate limits to respect
+INTER_BATCH_DELAY = 0.0
+# Concurrent NMA claims per batch. NMA fires 1 LLM call/claim (vs MAS's 3),
+# so can tolerate higher concurrency.
+CONCURRENCY = 8
 
 
 def _make_failure_result(claim_id: str, error: str) -> dict:
-    """
-    Fallback result when a claim fails completely.
-    Mirrors the failure format used by run_evals.py so metrics functions
-    receive a consistent structure.
-    """
     return {
         "claim_id": claim_id,
         "latency_seconds": 0.0,
@@ -105,6 +115,10 @@ def _print_summary(report: dict) -> None:
     print(f"  NMA EVALUATION COMPLETE  [{report['run_id']}]")
     print(f"{'═' * 55}")
     print(f"  Claims evaluated     : {report['claims_evaluated']}")
+    wall = report.get("total_time_seconds", 0)
+    if wall:
+        per_claim = wall / max(report["claims_evaluated"], 1)
+        print(f"  Wall time            : {wall:.0f}s  ({per_claim:.1f}s/claim)")
     print(sep)
     acc = report["decision_accuracy"]
     print(f"  Decision Accuracy    : {acc['accuracy']*100:.1f}%  ({acc['correct']}/{acc['total']})")
@@ -132,10 +146,83 @@ def _print_summary(report: dict) -> None:
     print()
 
 
+async def _process_single_claim(claim_id: str) -> tuple[dict, float]:
+    """Process one NMA claim and return (result_dict, elapsed_seconds)."""
+    t0 = time.perf_counter()
+    try:
+        ctx = await fetch_nma_context(claim_id)
+        res = await arun_nma_agent(ctx)
+        lat = time.perf_counter() - t0
+
+        result = {
+            "claim_id": claim_id,
+            "latency_seconds": lat,
+            "final_decision": {
+                "approved": res.approved,
+                "final_payout": res.final_payout,
+                "step_by_step_reasoning": res.step_by_step_reasoning,
+            },
+            "fraud_report": {
+                "risk_score": (
+                    "High" if res.fraud_risk_score >= 8
+                    else "Medium" if res.fraud_risk_score >= 4
+                    else "Low"
+                ),
+                "anomalies": (
+                    [res.fraud_anomalies] if res.fraud_anomalies != "None" else []
+                ),
+            },
+            "policy_verdict": {
+                "incident_covered": res.incident_covered,
+                "exclusion_triggered": res.exclusion_triggered,
+                "exclusion_reason": res.exclusion_reason,
+                "coverage_scope": ctx.get("policy", {}).get("coverage_scope", ""),
+                "exclusions": ctx.get("policy", {}).get("exclusions", ""),
+                "policy_limit": ctx.get("policy", {}).get("policy_limit", 0),
+                "aggregate_limit": ctx.get("policy", {}).get("aggregate_limit", 0),
+                "deductible": ctx.get("policy", {}).get("deductible", 0),
+                "total_historical_payout": ctx.get("policy", {}).get("total_historical_payout", 0),
+                "remaining_limit": (
+                    float(ctx.get("policy", {}).get("aggregate_limit", 0))
+                    - float(ctx.get("policy", {}).get("total_historical_payout", 0))
+                ),
+            },
+            "errors": [],
+        }
+        logger.info(
+            "Claim %s → approved=%s | payout=$%.2f | fraud_score=%d | %.2fs",
+            claim_id, res.approved, res.final_payout, res.fraud_risk_score, lat,
+        )
+        return result, lat
+
+    except Exception as exc:
+        lat = time.perf_counter() - t0
+        logger.error("Failed claim %s after %.2fs: %s", claim_id, lat, exc)
+        result = _make_failure_result(claim_id, str(exc))
+        result["latency_seconds"] = lat
+        return result, lat
+
+
+async def _process_batch(claim_ids: list[str], batch_num: int, total_batches: int) -> list[tuple[dict, float]]:
+    logger.info(
+        "Batch [%d/%d]: processing %d claims concurrently…",
+        batch_num, total_batches, len(claim_ids),
+    )
+    tasks = [_process_single_claim(cid) for cid in claim_ids]
+    raw = await asyncio.gather(*tasks, return_exceptions=True)
+
+    processed = []
+    for cid, res in zip(claim_ids, raw):
+        if isinstance(res, Exception):
+            logger.error("Claim %s batch task raised: %s", cid, res)
+            processed.append((_make_failure_result(cid, str(res)), 0.0))
+        else:
+            processed.append(res)
+    return processed
+
+
 async def run_evals_nma():
     db = get_db()
-
-    # BUG FIX: use explicit dict-style collection access for clarity
     claims_cursor = db["Active_Claims"].find({}, {"_id": 0, "claim_id": 1})
     claim_ids: list[str] = await asyncio.to_thread(
         lambda: [c["claim_id"] for c in claims_cursor]
@@ -149,73 +236,31 @@ async def run_evals_nma():
 
     results: list[dict] = []
     latencies: list[dict] = []
+
+    # Split into batches
+    batches = [
+        claim_ids[i:i + CONCURRENCY]
+        for i in range(0, len(claim_ids), CONCURRENCY)
+    ]
+    total_batches = len(batches)
+
     start_run = time.perf_counter()
 
-    for i, cid in enumerate(claim_ids, 1):
-        logger.info("Processing [%d/%d] %s", i, len(claim_ids), cid)
-        t0 = time.perf_counter()
+    for batch_idx, batch in enumerate(batches, 1):
+        batch_results = await _process_batch(batch, batch_idx, total_batches)
 
-        try:
-            ctx = await fetch_nma_context(cid)
-            res = await arun_nma_agent(ctx)
-            lat = time.perf_counter() - t0
-
-            result = {
-                "claim_id": cid,
-                "latency_seconds": lat,
-                "final_decision": {
-                    "approved": res.approved,
-                    "final_payout": res.final_payout,
-                    "step_by_step_reasoning": res.step_by_step_reasoning,
-                },
-                "fraud_report": {
-                    # Map numeric score to string risk level used by fraud metrics
-                    "risk_score": (
-                        "High" if res.fraud_risk_score >= 8
-                        else "Medium" if res.fraud_risk_score >= 4
-                        else "Low"
-                    ),
-                    "anomalies": (
-                        [res.fraud_anomalies] if res.fraud_anomalies != "None" else []
-                    ),
-                },
-                "policy_verdict": {
-                    "incident_covered": res.incident_covered,
-                    "exclusion_triggered": res.exclusion_triggered,
-                    "exclusion_reason": res.exclusion_reason,
-                    "coverage_scope": ctx.get("policy", {}).get("coverage_scope", ""),
-                    "exclusions": ctx.get("policy", {}).get("exclusions", ""),
-                    "policy_limit": ctx.get("policy", {}).get("policy_limit", 0),
-                    "aggregate_limit": ctx.get("policy", {}).get("aggregate_limit", 0),
-                    "deductible": ctx.get("policy", {}).get("deductible", 0),
-                    "total_historical_payout": ctx.get("policy", {}).get("total_historical_payout", 0),
-                    "remaining_limit": float(ctx.get("policy", {}).get("aggregate_limit", 0)) - float(ctx.get("policy", {}).get("total_historical_payout", 0)),
-                },
-                "errors": [],
-            }
+        for cid, (result, lat) in zip(batch, batch_results):
             results.append(result)
-            logger.info(
-                "Claim %s → approved=%s | payout=$%.2f | fraud_score=%d | %.2fs",
-                cid, res.approved, res.final_payout, res.fraud_risk_score, lat,
-            )
+            latencies.append({"claim_id": cid, "total_s": lat})
 
-        except Exception as exc:
-            lat = time.perf_counter() - t0
-            logger.error("Failed claim %s after %.2fs: %s", cid, lat, exc)
-            # BUG FIX: previously this path silently dropped the claim from results.
-            # Always append a failure record so the eval denominator is correct.
-            result = _make_failure_result(cid, str(exc))
-            result["latency_seconds"] = lat
-            results.append(result)
-
-        latencies.append({"claim_id": cid, "total_s": time.perf_counter() - t0})
-
-        # Rate-limit backoff between claims
-        if i < len(claim_ids):
-            actual = adaptive_sleep(INTER_CLAIM_DELAY)
-            logger.debug("Slept %.1fs before next claim", actual)
+        if INTER_BATCH_DELAY > 0 and batch_idx < total_batches:
+            await asyncio.sleep(INTER_BATCH_DELAY)
 
     total_time = time.perf_counter() - start_run
+    logger.info(
+        "All %d claims processed in %.1fs (%.1fs/claim average, concurrency=%d)",
+        len(claim_ids), total_time, total_time / len(claim_ids), CONCURRENCY,
+    )
 
     # ── Metrics ────────────────────────────────────────────────────────────────
     acc_metrics = decision_accuracy(results, ground_truth)
@@ -233,14 +278,14 @@ async def run_evals_nma():
         "timestamp": datetime.now().isoformat(),
         "system": "NMA (Single Agent)",
         "claims_evaluated": len(results),
+        "concurrency": CONCURRENCY,
+        "total_time_seconds": round(total_time, 2),
         "decision_accuracy": acc_metrics,
         "fraud_metrics": fraud_metrics,
         "stp": stp_metrics,
         "latency": lat_metrics,
         "token_efficiency": {},
-        "total_time_seconds": round(total_time, 2),
         "scenario_breakdown": breakdown,
-        # These keys keep the reporter happy when building comparison charts
         "consistency": {"mean_consistency": 1.0, "per_claim": {}, "k_runs": 1},
         "step_completeness": {},
         "llm_judge": judge_metrics,

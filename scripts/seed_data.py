@@ -43,13 +43,42 @@ COVERAGE_TEMPLATES = [
     "Full coverage with GAP insurance, rental reimbursement, and new car replacement within first 24 months.",
 ]
 
+# FIX: Exclusion templates are now tagged by which semantic_exclusion
+# narrative types they cover. Policies assigned to semantic_exclusion
+# customers are selected based on what the narrative actually describes,
+# guaranteeing the exclusion exists in the policy.
 EXCLUSION_TEMPLATES = [
+    # idx 0 — covers racing + DUI + off-road
     "Excludes: Street Racing, DUI/DWI, Off-roading on unpaved terrain, Unlicensed Drivers, Intentional Damage.",
+    # idx 1 — covers racing + rideshare/commercial
     "Excludes: Racing events, vehicles used for hire (rideshare/taxi), mechanical breakdown, wear and tear.",
+    # idx 2 — covers DUI (intoxicated) + illegal mods
     "Excludes: War, nuclear hazard, government seizure, use while intoxicated, illegal modifications.",
+    # idx 3 — covers racing + commercial + off-road circuits
     "Excludes: Street Racing, commercial use, driving outside licensed territory, off-road circuits.",
+    # idx 4 — covers DUI + off-road
     "Excludes: DUI, Unlicensed Drivers, intentional self-damage, contraband transport, Off-roading.",
 ]
+
+# Map each semantic_exclusion narrative index to an exclusion template index
+# that is guaranteed to contain the right exclusion.
+# Narrative indices (relative to the FRAUD_NARRATIVES["semantic_exclusion"] list):
+#   0-3: track/circuit racing  → need "Street Racing" or "Racing events" or "off-road circuits"
+#   4-5: off-road              → need "Off-roading" or "off-road circuits"
+#   6-7: DUI                   → need "DUI/DWI", "DUI", or "use while intoxicated"
+#   8-9: rideshare/commercial  → need "vehicles for hire" or "commercial use"
+SEMANTIC_EXCLUSION_TEMPLATE_MAP = {
+    0: 0,  # track racing → template 0 (Street Racing)
+    1: 1,  # track racing → template 1 (Racing events)
+    2: 3,  # track racing → template 3 (Street Racing + off-road circuits)
+    3: 1,  # autocross    → template 1 (Racing events)
+    4: 0,  # off-road     → template 0 (Off-roading on unpaved terrain)
+    5: 4,  # off-road     → template 4 (Off-roading)
+    6: 0,  # DUI          → template 0 (DUI/DWI)
+    7: 2,  # DUI          → template 2 (use while intoxicated)
+    8: 1,  # rideshare    → template 1 (vehicles used for hire)
+    9: 3,  # rideshare    → template 3 (commercial use)
+}
 
 INCIDENT_TYPES = ["Rear-end", "Theft", "Vandalism", "Hit and Run", "Total Loss"]
 CLAIM_STATUSES = ["Approved", "Denied", "Fraud_Flagged"]
@@ -86,19 +115,25 @@ FRAUD_NARRATIVES = {
         "A large SUV reportedly ran a red light and collided head-on with the insured vehicle at moderate speed. Independent accident reconstruction estimates impact force inconsistent with reported damage.",
     ],
     "semantic_exclusion": [
-        # Track / circuit racing
+        # 0: track/circuit racing
         "Claimant was driving at high speed on a closed circuit track during a private event when they lost control on a hairpin and struck the barrier.",
+        # 1: track racing
         "Vehicle was damaged while the driver was participating in a timed lap competition on a closed-circuit road course. Engine bay sustained fire damage.",
+        # 2: track racing
         "Claimant states the incident occurred during a track day at a motorsport facility. The vehicle left the asphalt on a high-speed corner and hit a tyre wall.",
+        # 3: autocross
         "Damage occurred when the insured vehicle spun out during a timed autocross session held on private property. Roll-cage intrusion noted in repair estimate.",
-        # Off-road / unpaved terrain
+        # 4: off-road / unpaved terrain
         "Claimant took the vehicle off-road on an unpaved forest trail for recreational purposes. The undercarriage was severely damaged after high-centering on a boulder.",
+        # 5: off-road rocky riverbed
         "Vehicle sustained axle and suspension damage after the claimant drove down a rocky riverbed during a camping trip. No paved road was involved at any point.",
-        # DUI / intoxicated driving
+        # 6: DUI - explicit BAC mention
         "Police report accompanying the claim notes the claimant was arrested at the scene for driving under the influence of alcohol. Blood-alcohol level recorded at 0.14.",
+        # 7: DUI - admitted consumption
         "Claimant admits to consuming alcohol at a private party before driving home. Single-vehicle collision with a parked car occurred two blocks from the venue.",
-        # Rideshare / commercial use
+        # 8: rideshare / commercial use
         "Incident occurred while the claimant was actively transporting a fare via a rideshare platform. Trip receipt and GPS data confirm commercial use at time of loss.",
+        # 9: unlicensed taxi / commercial
         "Claimant was using the insured vehicle as an unlicensed taxi at the time of the accident. Passenger statements corroborate commercial operation of the vehicle.",
     ],
     "collusion_ring": [
@@ -107,7 +142,7 @@ FRAUD_NARRATIVES = {
         "Hail damage across the vehicle's roof and hood was assessed. Claimant dropped the vehicle off at Apex AutoBody & Collision the following day.",
         "Side-swipe damage along the entire driver side. Vehicle is currently at Apex AutoBody & Collision awaiting parts.",
         "Claimant discovered vandalism damage after leaving a shopping center. Immediately drove to Apex AutoBody & Collision for an estimate.",
-        "Rear quarter-panel damage sustained in a car park. Claimant states Apex AutoBody & Collision was strongly recommended by their mechanic.",
+        "Claimant states Apex AutoBody & Collision was strongly recommended by their mechanic.",
         "Vehicle struck a pothole causing rim and suspension damage. Claimant insisted on having the assessment performed exclusively at Apex AutoBody & Collision.",
         "Windshield shattered by a stone chip on the motorway. Claimant bypassed three closer repair shops to bring the vehicle to Apex AutoBody & Collision.",
     ],
@@ -141,34 +176,32 @@ all_histories = []
 policies_pinecone = []
 active_claims = []
 
-frequent_claimant_ids = []
-collusion_customer_ids = []
-
 for i in range(NUM_CUSTOMERS):
     cid = str(uuid.uuid4())
     pid = str(uuid.uuid4())
 
     is_frequent_claimant  = i < 5
-    is_collusion          = 5  <= i < 13   # 8 customers → 8 collusion narratives
-    is_staged             = 13 <= i < 18   # 5 customers → 5 staged narratives
-    is_semantic_exclusion = 18 <= i < 28   # 10 customers → 10 semantic_exclusion narratives
-    is_aggregate_breach   = 28 <= i < 32   # 4 customers
+    is_collusion          = 5  <= i < 13
+    is_staged             = 13 <= i < 18
+    is_semantic_exclusion = 18 <= i < 28
+    is_aggregate_breach   = 28 <= i < 32
 
     if is_frequent_claimant:
-        frequent_claimant_ids.append(cid)
         history = gen_history(cid, num_claims=random.randint(3, 5), fraud_heavy=True)
         risk = "High Risk"
         ncd = 0.0
     elif is_collusion:
-        collusion_customer_ids.append(cid)
         history = gen_history(cid, num_claims=random.randint(1, 3))
         risk = random.choice(["Safe", "Watchlist"])
         ncd = round(random.uniform(0.1, 0.4), 2)
     else:
         num_hist = random.randint(0, 4)
         history = gen_history(cid, num_claims=num_hist)
+        # FIX: risk rating now requires >=2 denied/flagged (was >=1)
+        # A single denied historical claim is too common to reliably indicate
+        # fraud — it triggered false HIGH-risk ratings on normal customers.
         recent_denied = sum(1 for h in history if h["claim_status"] in ["Denied", "Fraud_Flagged"])
-        risk = "High Risk" if recent_denied >= 3 else ("Watchlist" if recent_denied >= 1 else "Safe")
+        risk = "High Risk" if recent_denied >= 2 else ("Watchlist" if recent_denied >= 1 else "Safe")
         ncd = round(random.uniform(0.0, 0.5), 2)
 
     all_histories.extend(history)
@@ -178,7 +211,16 @@ for i in range(NUM_CUSTOMERS):
     aggregate_limit  = random.choice([50000, 75000, 100000])
     deductible       = random.choice([250, 500, 750, 1000])
     coverage         = random.choice(COVERAGE_TEMPLATES)
-    exclusions       = random.choice(EXCLUSION_TEMPLATES)
+
+    # FIX: semantic_exclusion customers get the exclusion template that is
+    # guaranteed to contain the right exclusion clause for their narrative.
+    # All other customers get a random template.
+    if is_semantic_exclusion:
+        narrative_idx = (i - 18) % len(FRAUD_NARRATIVES["semantic_exclusion"])
+        exclusion_template_idx = SEMANTIC_EXCLUSION_TEMPLATE_MAP[narrative_idx]
+        exclusions = EXCLUSION_TEMPLATES[exclusion_template_idx]
+    else:
+        exclusions = random.choice(EXCLUSION_TEMPLATES)
 
     customer = {
         "customer_id":    cid,
@@ -217,7 +259,7 @@ for i in range(NUM_CUSTOMERS):
     })
 
     # ── Active claim generation ──────────────────────────────────────────────
-    ocr_estimate = None   # only overridden for staged accidents
+    ocr_estimate = None
 
     if is_frequent_claimant:
         narrative     = random.choice(FRAUD_NARRATIVES["frequent_claimant_vandalism"])
@@ -226,7 +268,6 @@ for i in range(NUM_CUSTOMERS):
         shop          = fake.company() + " Auto Repair"
 
     elif is_collusion:
-        # cycle safely through all 8 collusion narratives
         narrative     = FRAUD_NARRATIVES["collusion_ring"][(i - 5) % len(FRAUD_NARRATIVES["collusion_ring"])]
         incident_type = random.choice(["Rear-end", "Vandalism", "Hit and Run"])
         estimated_loss = round(random.uniform(2000, 12000), 2)
@@ -240,7 +281,8 @@ for i in range(NUM_CUSTOMERS):
         ocr_estimate  = 200.0
 
     elif is_semantic_exclusion:
-        narrative     = FRAUD_NARRATIVES["semantic_exclusion"][(i - 18) % len(FRAUD_NARRATIVES["semantic_exclusion"])]
+        narrative_idx = (i - 18) % len(FRAUD_NARRATIVES["semantic_exclusion"])
+        narrative     = FRAUD_NARRATIVES["semantic_exclusion"][narrative_idx]
         incident_type = "Total Loss"
         estimated_loss = round(random.uniform(15000, 28000), 2)
         shop          = fake.company() + " Motorsport Repairs"
@@ -255,7 +297,9 @@ for i in range(NUM_CUSTOMERS):
     else:
         narrative      = random.choice(NORMAL_NARRATIVES)
         incident_type  = random.choice(INCIDENT_TYPES)
-        estimated_loss = round(random.uniform(500, policy_limit * 0.9), 2)
+        # FIX: cap normal claim estimated_loss at $12k (was policy_limit*0.9,
+        # which could reach $27k and trigger false high-value fraud escalation)
+        estimated_loss = round(random.uniform(500, min(policy_limit * 0.9, 12000)), 2)
         shop           = fake.company() + " Auto Repair"
 
     loss_date = gen_date(days_back_max=180)

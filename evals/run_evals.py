@@ -7,64 +7,51 @@ Run
 ---
     python -m evals.run_evals [--k 3] [--no-chaos] [--no-llm-judge]
                               [--output-dir evals/results] [--claims N]
-                              [--claim-ids id1 id2 ...] [--delay 4]
+                              [--claim-ids id1 id2 ...] [--delay 0]
+                              [--concurrency 5]
+
+Speed improvements in this version
+------------------------------------
+- Default --delay is now 0 (was 4). The original delay was copied from Groq
+  free-tier rate-limit guidance. Ollama runs locally with no rate limits;
+  the delay was pure dead time (~3.5 min wasted on 50 claims).
+
+- --concurrency N (default 5): claims are now processed in concurrent batches
+  using asyncio.gather(). Each claim fires 3 LLM calls (2 parallel via
+  parallel_analysis + 1 for decision). With Ollama, concurrent requests are
+  queued server-side and processed as fast as the GPU allows — throughput is
+  significantly higher than strict sequential processing.
+
+  Expected speedup:
+    Sequential (old):  50 claims × 160s = ~2.2 hours
+    Concurrent ×5:     10 batches × 160s / batch ≈ ~27 min
+    Concurrent ×10:    5  batches × 160s / batch ≈ ~13 min
+
+  Tune --concurrency to your GPU VRAM. llama3:latest at 4-bit quantization
+  fits in ~8GB VRAM; 5 concurrent requests is safe for 24GB cards.
+  Use --concurrency 3 if you see OOM errors or severe slowdowns.
+
+- LLM judge sample unchanged at 5 (local Ollama is slower for judge calls
+  since they compete with pipeline calls; keep low during main eval).
 
 Arguments
 ---------
---k                  Number of repeated runs per claim for consistency testing (default 1).
-                     Set to 3 for a full consistency sweep — note this multiplies runtime.
---no-chaos           Skip chaos/corruption sweep (faster).
---no-llm-judge       Skip Groundedness and Hallucination scoring (faster).
---output-dir         Directory for JSON report and PNG chart (default: evals/results).
---claims N           Process only the first N claims (default: all).
---claim-ids          Explicit list of claim IDs to process.
---delay              Seconds to sleep between claims (default: 4).
-                     NOTE: The parallel_analysis node fires policy_agent AND fraud_agent
-                     simultaneously, so each claim consumes ~2x the RPM budget. The
-                     default of 4s gives enough headroom on Groq free tier (30 RPM).
-                     Set to 0 to disable throttling entirely (risky on free tier).
---llm-judge-sample   Max claims to score with LLM judge (default: 5).
-
-Exit codes
-----------
-0 — all metrics computed successfully
-1 — fatal error (missing env vars, empty DB, etc.)
-
-Speed notes
------------
-Default settings (--k 1 --no-chaos --llm-judge-sample 5) run ~50 claims sequentially
-with a 4s inter-claim delay: ~50 × (LLM latency + 4s) ≈ 8–12 min.
-
-To get a fast smoke-test result in ~2 min:
-    python -m evals.run_evals --claims 10 --k 1 --no-chaos --no-llm-judge --delay 2
-
-For a full production eval, use:
-    python -m evals.run_evals --k 3 --llm-judge-sample 10
-
-FIX vs previous version
------------------------
-_run_llm_judge: The `facts` string passed to the hallucination judge was too thin.
-It only included incident_type, risk_score, and basic policy flags — but
-decision_agent reasoning (now 3 numbered sentences) references specific dollar
-amounts, exclusion clause names, and fraud anomaly details. Any claim-specific
-detail not in `facts` was correctly marked `unsupported` by the judge, inflating
-the hallucination rate to ~60% even for accurate reasoning.
-
-Fix: facts now includes:
-  - Exact dollar amounts (loss, deductible, remaining limit, expected payout)
-  - Exclusion reason text (so sentence 1 can reference it)
-  - Fraud flags and primary anomaly text (so sentence 2 can reference them)
-  - Coverage scope excerpt (so sentence 1 can quote it)
-  - Full denial signal list (so sentence 3 can reference the denial reason)
-
-This gives the judge a complete fact base that matches the information
-the decision agent actually had access to, eliminating false unsupported
-classifications caused by the judge not knowing what the agent knew.
+--k              Consistency runs per claim (default 1).
+--chaos          Enable OCR corruption sweep.
+--no-llm-judge   Skip groundedness + hallucination scoring.
+--output-dir     Output directory (default: evals/results).
+--claims N       Evaluate first N claims only.
+--claim-ids      Explicit claim IDs.
+--delay          Seconds between BATCHES (default 0). Only useful if hitting
+                 an external API with rate limits. Set >0 for Groq/OpenAI.
+--concurrency    Claims processed in parallel per batch (default 5).
+--llm-judge-sample  Max claims scored by LLM judge (default 5).
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import statistics
@@ -78,7 +65,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
-
 load_dotenv()
 
 from evals.ground_truth import load_ground_truth, GTRecord
@@ -107,10 +93,7 @@ logger = logging.getLogger("evals.run_evals")
 try:
     from src.main import process_claim as _process_claim
 except ImportError as exc:
-    logger.error(
-        "Cannot import src.main.process_claim. "
-        "Make sure you run this from the project root: %s", exc
-    )
+    logger.error("Cannot import src.main.process_claim: %s", exc)
     sys.exit(1)
 
 
@@ -132,6 +115,56 @@ def _timed_process(claim_id: str) -> tuple[dict, float]:
     return result, elapsed
 
 
+async def _async_timed_process(claim_id: str) -> tuple[dict, float]:
+    """
+    Async wrapper that runs _timed_process in a thread pool so that
+    asyncio.gather() can overlap multiple claims concurrently.
+
+    process_claim() internally bridges sync→async correctly via its own
+    ThreadPoolExecutor in graph.py, so running it from a thread here is safe.
+    """
+    loop = asyncio.get_event_loop()
+    t0 = time.perf_counter()
+    try:
+        result = await loop.run_in_executor(None, _process_claim, claim_id)
+    except Exception as exc:
+        logger.error("Pipeline raised an exception for claim %s: %s", claim_id, exc)
+        result = {
+            "claim_id": claim_id,
+            "final_decision": {"approved": False, "denial_reason": str(exc)},
+            "errors": [str(exc)],
+            "final_payout": 0.0,
+        }
+    elapsed = time.perf_counter() - t0
+    return result, elapsed
+
+
+async def _process_batch(claim_ids: list[str], batch_num: int, total_batches: int) -> list[tuple[dict, float]]:
+    """Process a batch of claims concurrently."""
+    logger.info(
+        "Batch [%d/%d]: processing %d claims concurrently…",
+        batch_num, total_batches, len(claim_ids),
+    )
+    tasks = [_async_timed_process(cid) for cid in claim_ids]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Handle any tasks that raised exceptions (already handled inside _async_timed_process,
+    # but gather with return_exceptions=True catches anything that slips through)
+    processed = []
+    for cid, res in zip(claim_ids, results):
+        if isinstance(res, Exception):
+            logger.error("Claim %s batch task raised: %s", cid, res)
+            processed.append(({
+                "claim_id": cid,
+                "final_decision": {"approved": False, "denial_reason": str(res)},
+                "errors": [str(res)],
+                "final_payout": 0.0,
+            }, 0.0))
+        else:
+            processed.append(res)
+    return processed
+
+
 def _extract_token_usage(result: dict) -> dict[str, int]:
     usage = result.get("token_usage") or {}
     if not usage:
@@ -144,27 +177,12 @@ def _extract_token_usage(result: dict) -> dict[str, int]:
     return usage
 
 
-# ── LLM-Judge scoring (optional) ──────────────────────────────────────────────
+# ── LLM-Judge scoring ──────────────────────────────────────────────────────────
 
 def _build_facts_string(r: dict, gt: GTRecord) -> str:
-    """
-    Build a comprehensive facts string for the hallucination judge.
-
-    FIX: The previous facts string was too thin — only incident_type, risk_score,
-    and policy boolean flags. The updated decision_agent produces 3 numbered
-    sentences that each reference specific, verifiable data points:
-      Sentence 1 (policy): exclusion reason text, coverage scope excerpt
-      Sentence 2 (fraud):  risk level, flag names, primary anomaly
-      Sentence 3 (finance): loss amount, deductible, remaining limit, payout formula
-
-    If the judge doesn't have these in `facts`, it correctly marks them as
-    `unsupported` — producing falsely inflated hallucination rates even for
-    accurate reasoning. This function gives the judge the full fact base.
-    """
     pv = r.get("policy_verdict") or {}
     fr = r.get("fraud_report") or {}
 
-    # Financial facts — needed for sentence 3
     estimated_loss   = gt.estimated_loss
     remaining_limit  = float(pv.get("remaining_limit", 0))
     deductible       = float(pv.get("deductible", 0))
@@ -172,7 +190,6 @@ def _build_facts_string(r: dict, gt: GTRecord) -> str:
     total_paid       = float(pv.get("total_historical_payout", 0))
     expected_payout  = max(0.0, min(estimated_loss - deductible, remaining_limit))
 
-    # Fraud facts — needed for sentence 2
     anomalies        = fr.get("anomalies", [])
     primary_anomaly  = anomalies[0] if anomalies else "none"
     fraud_flags      = (
@@ -181,11 +198,8 @@ def _build_facts_string(r: dict, gt: GTRecord) -> str:
         f"staging={fr.get('staging_flag')}"
     )
 
-    # Policy facts — needed for sentence 1
     exclusion_reason = pv.get("exclusion_reason", "none")
     coverage_scope   = (pv.get("coverage_scope") or "N/A")[:200]
-
-    # Denial signals — needed for sentence 3 when denied
     denial_signals   = "; ".join(r.get("errors", [])) or "none"
 
     return (
@@ -213,15 +227,6 @@ def _run_llm_judge(
     ground_truth: dict[str, GTRecord],
     max_sample: int = 5,
 ) -> dict:
-    """
-    Run Groundedness and Hallucination judges on a sample of results.
-
-    max_sample is intentionally small (default 5) to avoid rate-limit 429s
-    and keep eval runtime reasonable. Raise it with --llm-judge-sample if needed.
-
-    Both judges now return None on failure (400 / exhausted retries) rather than
-    raising — the eval run continues and the failed claims are counted separately.
-    """
     try:
         from evals.llm_judge import GroundednessJudge, HallucinationJudge
     except ImportError as exc:
@@ -235,7 +240,6 @@ def _run_llm_judge(
     hallucination_rates: list[float] = []
     judge_errors: list[str] = []
 
-    # Sample only claims that have a policy_verdict (otherwise judge has nothing to score)
     sample = [r for r in results if r.get("policy_verdict")][:max_sample]
     logger.info("LLM judge: scoring %d / %d claims", len(sample), len(results))
 
@@ -246,7 +250,6 @@ def _run_llm_judge(
 
         logger.info("LLM judge [%d/%d] claim=%s", i, len(sample), cid)
 
-        # ── Groundedness ──────────────────────────────────────────────────────
         try:
             policy_text = (
                 f"Coverage: {pv.get('coverage_scope', '')}. "
@@ -257,39 +260,28 @@ def _run_llm_judge(
             g_score = g_judge.score(policy_text=policy_text, verdict=pv)
             if g_score is not None:
                 groundedness_scores.append(g_score.score)
-                logger.debug("claim=%s | groundedness=%d", cid, g_score.score)
             else:
                 judge_errors.append(f"Groundedness returned None for {cid}")
         except Exception as exc:
             judge_errors.append(f"Groundedness failed for {cid}: {exc}")
             logger.warning("Groundedness judge error for %s: %s", cid, exc)
 
-        # Small pause between judge calls to avoid hitting RPM on free tier
-        time.sleep(2)
+        time.sleep(1)
 
-        # ── Hallucination ─────────────────────────────────────────────────────
         try:
             reasoning = (r.get("final_decision") or {}).get("step_by_step_reasoning", "")
             if reasoning and gt:
-                # FIX: use the expanded facts builder instead of the thin inline string
                 facts = _build_facts_string(r, gt)
                 h_report = h_judge.evaluate(facts=facts, reasoning=reasoning)
                 if h_report is not None:
                     hallucination_rates.append(h_report.hallucination_rate)
-                    logger.debug(
-                        "claim=%s | hallucination_rate=%.3f "
-                        "(supported=%d, unsupported=%d, uncertain=%d)",
-                        cid, h_report.hallucination_rate,
-                        h_report.supported, h_report.unsupported, h_report.uncertain,
-                    )
                 else:
                     judge_errors.append(f"Hallucination returned None for {cid}")
         except Exception as exc:
             judge_errors.append(f"Hallucination failed for {cid}: {exc}")
             logger.warning("Hallucination judge error for %s: %s", cid, exc)
 
-        # Pause between claims
-        time.sleep(2)
+        time.sleep(1)
 
     return {
         "groundedness": {
@@ -321,17 +313,10 @@ def run_evaluation(
     output_dir: str = "evals/results",
     max_claims: int | None = None,
     explicit_claim_ids: list[str] | None = None,
-    inter_claim_delay: float = 4.0,
+    inter_claim_delay: float = 0.0,   # FIX: default 0 (was 4) — Ollama is local
     llm_judge_sample: int = 5,
+    concurrency: int = 5,             # NEW: concurrent claims per batch
 ) -> dict:
-    """
-    Full evaluation pipeline.
-
-    Parameter defaults are intentionally conservative for speed:
-      - k=1          (no consistency sweep — add --k 3 for full run)
-      - run_chaos=False (skipped by default — add --chaos to enable)
-      - llm_judge_sample=5  (score only 5 claims with the LLM judge)
-    """
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -339,8 +324,8 @@ def run_evaluation(
     logger.info("═" * 60)
     logger.info("  Car Insurance MAS — Evaluation Run  [%s]", run_id)
     logger.info(
-        "  K=%d  chaos=%s  llm_judge=%s  delay=%.1fs  judge_sample=%d",
-        k, run_chaos, run_llm_judge, inter_claim_delay, llm_judge_sample,
+        "  K=%d  chaos=%s  llm_judge=%s  concurrency=%d  delay=%.1fs  judge_sample=%d",
+        k, run_chaos, run_llm_judge, concurrency, inter_claim_delay, llm_judge_sample,
     )
     logger.info("═" * 60)
 
@@ -353,9 +338,7 @@ def run_evaluation(
         sys.exit(1)
 
     if explicit_claim_ids:
-        ground_truth = {
-            cid: gt for cid, gt in ground_truth.items() if cid in explicit_claim_ids
-        }
+        ground_truth = {cid: gt for cid, gt in ground_truth.items() if cid in explicit_claim_ids}
         logger.info("Filtered to %d explicit claim IDs.", len(ground_truth))
     elif max_claims:
         items = list(ground_truth.items())[:max_claims]
@@ -363,24 +346,50 @@ def run_evaluation(
         logger.info("Capped to first %d claims.", len(ground_truth))
 
     claim_ids = list(ground_truth.keys())
-    logger.info("Evaluating %d claims.", len(claim_ids))
+    logger.info("Evaluating %d claims (concurrency=%d).", len(claim_ids), concurrency)
 
-    # ── Single-pass runs ───────────────────────────────────────────────────────
-    logger.info("Running single-pass evaluation…")
+    # ── Concurrent batch processing ────────────────────────────────────────────
+    logger.info("Running single-pass evaluation (concurrent batches)…")
     results: list[dict] = []
     timing_records: list[dict] = []
     token_records: list[dict] = []
 
-    for i, cid in enumerate(claim_ids, 1):
-        logger.info("[%d/%d] Processing claim %s…", i, len(claim_ids), cid)
-        result, elapsed = _timed_process(cid)
-        results.append(result)
-        timing_records.append({"claim_id": cid, "total_s": elapsed, "per_agent": {}})
-        token_records.append({"claim_id": cid, "per_agent": _extract_token_usage(result)})
+    # Split claim_ids into batches of size `concurrency`
+    batches = [
+        claim_ids[i:i + concurrency]
+        for i in range(0, len(claim_ids), concurrency)
+    ]
+    total_batches = len(batches)
 
-        if inter_claim_delay > 0 and i < len(claim_ids):
-            actual = adaptive_sleep(inter_claim_delay)
-            logger.debug("Slept %.1fs before next claim", actual)
+    wall_t0 = time.perf_counter()
+
+    for batch_idx, batch in enumerate(batches, 1):
+        batch_results = asyncio.run(_process_batch(batch, batch_idx, total_batches))
+
+        for cid, (result, elapsed) in zip(batch, batch_results):
+            results.append(result)
+            timing_records.append({"claim_id": cid, "total_s": elapsed, "per_agent": {}})
+            token_records.append({"claim_id": cid, "per_agent": _extract_token_usage(result)})
+
+            fd = result.get("final_decision") or {}
+            logger.info(
+                "  claim=%s | approved=%s | payout=$%.2f | %.1fs",
+                cid,
+                fd.get("approved"),
+                result.get("final_payout", 0.0),
+                elapsed,
+            )
+
+        # Inter-BATCH delay (only relevant for external API rate limits)
+        if inter_claim_delay > 0 and batch_idx < total_batches:
+            logger.info("Sleeping %.1fs between batches…", inter_claim_delay)
+            time.sleep(inter_claim_delay)
+
+    total_wall = time.perf_counter() - wall_t0
+    logger.info(
+        "All %d claims processed in %.1fs (%.1fs/claim average, concurrency=%d)",
+        len(claim_ids), total_wall, total_wall / len(claim_ids), concurrency,
+    )
 
     # ── Core metrics ───────────────────────────────────────────────────────────
     logger.info("Computing core metrics…")
@@ -399,12 +408,10 @@ def run_evaluation(
     )
 
     # ── Consistency (K runs) ───────────────────────────────────────────────────
-    # Only run if K > 1 — consistency at K=1 is trivially 1.0 and wastes budget.
     multi_run: dict[str, list[dict]] = {}
 
     if k > 1:
         logger.info("Running consistency sweep (K=%d)…", k)
-        # Seed multi_run with the first-pass results
         for r in results:
             cid = r.get("claim_id")
             if cid:
@@ -412,11 +419,12 @@ def run_evaluation(
 
         for run_num in range(2, k + 1):
             logger.info("  Consistency run %d/%d…", run_num, k)
-            for j, cid in enumerate(claim_ids, 1):
-                result_k, _ = _timed_process(cid)
-                multi_run[cid].append(result_k)
-                if inter_claim_delay > 0 and j < len(claim_ids):
-                    adaptive_sleep(inter_claim_delay)
+            for batch_idx, batch in enumerate(batches, 1):
+                batch_results_k = asyncio.run(
+                    _process_batch(batch, batch_idx, total_batches)
+                )
+                for cid, (result_k, _) in zip(batch, batch_results_k):
+                    multi_run[cid].append(result_k)
 
         cons_metrics = consistency_score(multi_run)
     else:
@@ -432,8 +440,7 @@ def run_evaluation(
     judge_metrics: dict = {}
     if run_llm_judge:
         logger.info(
-            "Running LLM-as-Judge scoring (groundedness + hallucination, sample=%d)…",
-            llm_judge_sample,
+            "Running LLM-as-Judge scoring (sample=%d)…", llm_judge_sample
         )
         judge_metrics = _run_llm_judge(results, ground_truth, max_sample=llm_judge_sample)
     else:
@@ -468,6 +475,8 @@ def run_evaluation(
         "timestamp": datetime.now().isoformat(),
         "claims_evaluated": len(claim_ids),
         "k_runs": k,
+        "concurrency": concurrency,
+        "total_wall_seconds": round(total_wall, 1),
         "decision_accuracy": acc_metrics,
         "fraud_metrics": fraud_metrics,
         "stp": stp_metrics,
@@ -480,7 +489,6 @@ def run_evaluation(
         "scenario_breakdown": _scenario_breakdown(results, ground_truth),
     }
 
-    # ── Save outputs ───────────────────────────────────────────────────────────
     json_path = out_dir / f"eval_report_{run_id}.json"
     chart_path = out_dir / f"eval_chart_{run_id}.png"
 
@@ -529,6 +537,10 @@ def _print_summary(report: dict) -> None:
     print(f"  EVALUATION COMPLETE  [{report['run_id']}]")
     print(f"{'═' * 55}")
     print(f"  Claims evaluated     : {report['claims_evaluated']}")
+    wall = report.get("total_wall_seconds", 0)
+    if wall:
+        per_claim = wall / max(report["claims_evaluated"], 1)
+        print(f"  Wall time            : {wall:.0f}s  ({per_claim:.1f}s/claim, concurrency={report.get('concurrency',1)})")
     print(sep)
     acc = report["decision_accuracy"]
     print(f"  Decision Accuracy    : {acc['accuracy']*100:.1f}%  ({acc['correct']}/{acc['total']})")
@@ -574,46 +586,39 @@ def _print_summary(report: dict) -> None:
     print()
 
 
-# ── CLI entry point ────────────────────────────────────────────────────────────
+# ── CLI ────────────────────────────────────────────────────────────────────────
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Car Insurance MAS Evaluation Pipeline")
+    p.add_argument("--k", type=int, default=1,
+                   help="Consistency runs per claim (default 1)")
+    p.add_argument("--chaos", action="store_true",
+                   help="Enable chaos/corruption sweep")
+    p.add_argument("--no-llm-judge", action="store_true",
+                   help="Skip LLM-as-Judge scoring")
+    p.add_argument("--output-dir", default="evals/results",
+                   help="Output directory for reports")
+    p.add_argument("--claims", type=int, default=None,
+                   help="Process first N claims only")
+    p.add_argument("--claim-ids", nargs="+", default=None,
+                   help="Explicit claim IDs to process")
     p.add_argument(
-        "--k", type=int, default=1,
-        help="Consistency runs per claim (default 1 — use 3 for full sweep)",
-    )
-    p.add_argument(
-        "--chaos", action="store_true",
-        help="Enable chaos/corruption sweep (disabled by default for speed)",
-    )
-    p.add_argument(
-        "--no-llm-judge", action="store_true",
-        help="Skip LLM-as-Judge scoring",
-    )
-    p.add_argument(
-        "--output-dir", default="evals/results",
-        help="Output directory for reports",
-    )
-    p.add_argument(
-        "--claims", type=int, default=None,
-        help="Process first N claims only",
-    )
-    p.add_argument(
-        "--claim-ids", nargs="+", default=None,
-        help="Explicit claim IDs to process",
-    )
-    p.add_argument(
-        "--delay", type=float, default=4.0,
+        "--delay", type=float, default=0.0,
         help=(
-            "Seconds to sleep between claims (default 4.0). "
-            "Each claim fires 2 concurrent LLM calls (parallel_analysis), "
-            "doubling effective RPM. Increase if you hit 429s; set 0 to disable."
+            "Seconds to sleep between BATCHES (default 0). "
+            "Only needed for external API rate limits (Groq, OpenAI). "
+            "Ollama is local — leave at 0."
         ),
     )
     p.add_argument(
-        "--llm-judge-sample", type=int, default=5,
-        help="Max claims to score with LLM judge (default 5)",
+        "--concurrency", type=int, default=5,
+        help=(
+            "Number of claims processed in parallel per batch (default 5). "
+            "Tune to your GPU VRAM. Reduce to 3 if you see OOM errors."
+        ),
     )
+    p.add_argument("--llm-judge-sample", type=int, default=5,
+                   help="Max claims scored by LLM judge (default 5)")
     return p.parse_args()
 
 
@@ -628,4 +633,5 @@ if __name__ == "__main__":
         explicit_claim_ids=args.claim_ids,
         inter_claim_delay=args.delay,
         llm_judge_sample=args.llm_judge_sample,
+        concurrency=args.concurrency,
     )
