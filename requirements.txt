@@ -17,3 +17,4 @@ python-dotenv==1.2.2
 faker==40.15.0
 
 matplotlib==3.10.3
+flask
