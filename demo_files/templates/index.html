@@ -25,17 +25,18 @@
     --sienna-dk:  #5c4633;
     --sage:       #6b7c6b;
     --brick:      #9b4a3a;
+    --amber:      #c07c2a;
     --border:     #d4ccbf;
     --border-dk:  #b8ac9f;
     --shadow:     rgba(26,23,20,0.10);
     --shadow-lg:  rgba(26,23,20,0.18);
 
-    --ff:       'Georgia', 'Times New Roman', serif;
-    --mono:     'Courier New', monospace;
+    --ff:    'Georgia', 'Times New Roman', serif;
+    --mono:  'Courier New', monospace;
 
-    --radius:   4px;
+    --radius:    4px;
     --radius-lg: 8px;
-    --trans:    all 0.22s ease;
+    --trans:     all 0.22s ease;
   }
 
   html { font-size: 15px; scroll-behavior: smooth; }
@@ -48,7 +49,6 @@
     line-height: 1.65;
   }
 
-  /* ── Scrollbar ─────────────────────────────────────────────────────────── */
   ::-webkit-scrollbar { width: 7px; height: 7px; }
   ::-webkit-scrollbar-track { background: var(--linen-2); }
   ::-webkit-scrollbar-thumb { background: var(--border-dk); border-radius: 4px; }
@@ -64,542 +64,167 @@
     justify-content: space-between;
     gap: 24px;
   }
-  .masthead-left h1 {
-    font-size: 1.65rem;
-    font-weight: normal;
-    letter-spacing: 0.04em;
-    line-height: 1.2;
-  }
-  .masthead-left .sub {
-    font-size: 0.78rem;
-    color: var(--dust);
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    margin-top: 6px;
-  }
-  .masthead-badge {
-    font-size: 0.72rem;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--sienna-lt);
-    border: 1px solid var(--sienna-dk);
-    padding: 5px 14px;
-    border-radius: var(--radius);
-  }
-  .status-dot {
-    display: inline-block;
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: #6a9a6a;
-    margin-right: 7px;
-    vertical-align: middle;
-    animation: pulse 2.2s infinite;
-  }
-  @keyframes pulse {
-    0%,100% { opacity:1; }
-    50%      { opacity:0.4; }
-  }
+  .masthead-left h1 { font-size: 1.65rem; font-weight: normal; letter-spacing: 0.04em; line-height: 1.2; }
+  .masthead-left .sub { font-size: 0.78rem; color: var(--dust); letter-spacing: 0.12em; text-transform: uppercase; margin-top: 6px; }
+  .masthead-badge { font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--sienna-lt); border: 1px solid var(--sienna-dk); padding: 5px 14px; border-radius: var(--radius); }
+  .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #6a9a6a; margin-right: 7px; vertical-align: middle; animation: pulse 2.2s infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
 
   /* ── Preset Bar ────────────────────────────────────────────────────────── */
-  .preset-bar {
-    background: var(--linen-2);
-    border-bottom: 1px solid var(--border);
-    padding: 14px 48px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-  .preset-label {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--dust);
-    white-space: nowrap;
-    margin-right: 6px;
-  }
-  .preset-btn {
-    font-family: var(--ff);
-    font-size: 0.78rem;
-    letter-spacing: 0.05em;
-    background: var(--cream);
-    color: var(--ink-3);
-    border: 1px solid var(--border-dk);
-    padding: 6px 16px;
-    border-radius: var(--radius);
-    cursor: pointer;
-    transition: var(--trans);
-    white-space: nowrap;
-  }
+  .preset-bar { background: var(--linen-2); border-bottom: 1px solid var(--border); padding: 14px 48px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .preset-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--dust); white-space: nowrap; margin-right: 6px; }
+  .preset-btn { font-family: var(--ff); font-size: 0.78rem; letter-spacing: 0.05em; background: var(--cream); color: var(--ink-3); border: 1px solid var(--border-dk); padding: 6px 16px; border-radius: var(--radius); cursor: pointer; transition: var(--trans); white-space: nowrap; }
   .preset-btn:hover { background: var(--sienna); color: var(--cream); border-color: var(--sienna); }
   .preset-btn.active { background: var(--sienna-dk); color: var(--cream); border-color: var(--sienna-dk); }
 
   /* ── Main Layout ───────────────────────────────────────────────────────── */
-  .workspace {
-    display: grid;
-    grid-template-columns: 360px 1fr;
-    grid-template-rows: auto;
-    gap: 0;
-    min-height: calc(100vh - 120px);
-  }
+  .workspace { display: grid; grid-template-columns: 380px 1fr; grid-template-rows: auto; gap: 0; min-height: calc(100vh - 120px); }
 
-  /* ── Input Panel (left) ────────────────────────────────────────────────── */
-  .input-panel {
-    background: var(--linen);
-    border-right: 1px solid var(--border);
-    padding: 32px 28px;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    overflow-y: auto;
-    max-height: calc(100vh - 140px);
-    position: sticky;
-    top: 0;
-  }
+  /* ── Input Panel ───────────────────────────────────────────────────────── */
+  .input-panel { background: var(--linen); border-right: 1px solid var(--border); padding: 28px 24px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; max-height: calc(100vh - 140px); position: sticky; top: 0; }
+  .panel-heading { font-size: 0.70rem; text-transform: uppercase; letter-spacing: 0.18em; color: var(--dust); padding-bottom: 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  .field-group { display: flex; flex-direction: column; gap: 5px; }
+  .field-group label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.10em; color: var(--ink-3); }
+  .field-group input, .field-group select, .field-group textarea { font-family: var(--ff); font-size: 0.88rem; background: var(--cream); color: var(--ink); border: 1px solid var(--border-dk); border-radius: var(--radius); padding: 9px 12px; transition: border-color 0.18s; width: 100%; appearance: none; }
+  .field-group input:focus, .field-group select:focus, .field-group textarea:focus { outline: none; border-color: var(--sienna); }
+  .field-group textarea { resize: vertical; min-height: 100px; line-height: 1.55; }
 
-  .panel-heading {
-    font-size: 0.70rem;
-    text-transform: uppercase;
-    letter-spacing: 0.18em;
-    color: var(--dust);
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 4px;
-  }
+  /* ── Claimant name row with lookup button ─────────────────────────────── */
+  .name-row { display: flex; gap: 8px; align-items: flex-end; }
+  .name-row input { flex: 1; }
+  .btn-lookup { font-family: var(--ff); font-size: 0.76rem; letter-spacing: 0.04em; background: var(--linen-3); color: var(--ink-3); border: 1px solid var(--border-dk); border-radius: var(--radius); padding: 9px 14px; cursor: pointer; transition: var(--trans); white-space: nowrap; flex-shrink: 0; }
+  .btn-lookup:hover { background: var(--sienna-lt); color: var(--cream); border-color: var(--sienna); }
 
-  .field-group { display: flex; flex-direction: column; gap: 6px; }
-  .field-group label {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.10em;
-    color: var(--ink-3);
-  }
-  .field-group input,
-  .field-group select,
-  .field-group textarea {
-    font-family: var(--ff);
-    font-size: 0.88rem;
-    background: var(--cream);
-    color: var(--ink);
+  /* ── Customer profile card ────────────────────────────────────────────── */
+  .customer-card {
+    border-radius: var(--radius);
     border: 1px solid var(--border-dk);
-    border-radius: var(--radius);
-    padding: 9px 12px;
-    transition: border-color 0.18s;
-    width: 100%;
-    appearance: none;
+    overflow: hidden;
+    font-size: 0.78rem;
+    display: none;
   }
-  .field-group input:focus,
-  .field-group select:focus,
-  .field-group textarea:focus {
-    outline: none;
-    border-color: var(--sienna);
+  .customer-card.visible { display: block; }
+  .customer-card-header {
+    padding: 7px 12px;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
-  .field-group textarea { resize: vertical; min-height: 110px; line-height: 1.55; }
+  .customer-card-header.found  { background: #e2ece2; color: #2d5a2d; border-bottom: 1px solid #b8d4b8; }
+  .customer-card-header.not-found { background: #f0dbd8; color: #7a2e24; border-bottom: 1px solid #d4a8a0; }
+  .customer-card-body { padding: 10px 12px; background: var(--cream); display: flex; flex-direction: column; gap: 4px; }
+  .cust-row { display: flex; justify-content: space-between; gap: 12px; }
+  .cust-key { color: var(--dust); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.07em; }
+  .cust-val { color: var(--ink-2); font-size: 0.78rem; text-align: right; }
+  .cust-val.risk-safe    { color: #3a5c3a; }
+  .cust-val.risk-watch   { color: var(--amber); }
+  .cust-val.risk-high    { color: var(--brick); font-weight: bold; }
 
-  .ocr-note {
-    font-size: 0.72rem;
-    color: var(--dust);
-    font-style: italic;
-    margin-top: 2px;
-  }
-
+  .ocr-note { font-size: 0.72rem; color: var(--dust); font-style: italic; margin-top: 2px; }
   .run-section { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
-
-  .btn-primary {
-    font-family: var(--ff);
-    font-size: 0.85rem;
-    letter-spacing: 0.06em;
-    background: var(--ink);
-    color: var(--linen);
-    border: none;
-    padding: 12px 20px;
-    border-radius: var(--radius);
-    cursor: pointer;
-    transition: var(--trans);
-    width: 100%;
-    text-align: center;
-  }
+  .btn-primary { font-family: var(--ff); font-size: 0.85rem; letter-spacing: 0.06em; background: var(--ink); color: var(--linen); border: none; padding: 12px 20px; border-radius: var(--radius); cursor: pointer; transition: var(--trans); width: 100%; text-align: center; }
   .btn-primary:hover { background: var(--sienna-dk); }
   .btn-primary:active { transform: scale(0.98); }
   .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
-
-  .btn-outline {
-    font-family: var(--ff);
-    font-size: 0.80rem;
-    letter-spacing: 0.05em;
-    background: transparent;
-    color: var(--ink-3);
-    border: 1px solid var(--border-dk);
-    padding: 9px 18px;
-    border-radius: var(--radius);
-    cursor: pointer;
-    transition: var(--trans);
-    text-align: center;
-  }
+  .btn-outline { font-family: var(--ff); font-size: 0.80rem; letter-spacing: 0.05em; background: transparent; color: var(--ink-3); border: 1px solid var(--border-dk); padding: 9px 18px; border-radius: var(--radius); cursor: pointer; transition: var(--trans); text-align: center; }
   .btn-outline:hover { background: var(--linen-3); border-color: var(--sienna); color: var(--sienna-dk); }
-
   .run-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
-  /* ── Results Panel (right) ─────────────────────────────────────────────── */
-  .results-panel {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    min-height: calc(100vh - 140px);
-  }
-
-  /* ── System Column ─────────────────────────────────────────────────────── */
-  .system-col {
-    padding: 32px 28px;
-    border-right: 1px solid var(--border);
-    overflow-y: auto;
-    max-height: calc(100vh - 140px);
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-  }
+  /* ── Results Panel ─────────────────────────────────────────────────────── */
+  .results-panel { display: grid; grid-template-columns: 1fr 1fr; min-height: calc(100vh - 140px); }
+  .system-col { padding: 32px 28px; border-right: 1px solid var(--border); overflow-y: auto; max-height: calc(100vh - 140px); display: flex; flex-direction: column; gap: 20px; }
   .system-col:last-child { border-right: none; }
-
   .system-col.mas-col { background: var(--cream); }
   .system-col.nma-col { background: var(--linen-2); }
-
-  .col-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-    padding-bottom: 16px;
-    border-bottom: 2px solid var(--border);
-  }
-  .col-title {
-    font-size: 1.05rem;
-    letter-spacing: 0.03em;
-    color: var(--ink);
-  }
-  .col-title span {
-    display: block;
-    font-size: 0.70rem;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--dust);
-    margin-top: 3px;
-    font-style: normal;
-  }
-  .system-badge {
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    padding: 4px 10px;
-    border-radius: var(--radius);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
+  .col-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 16px; border-bottom: 2px solid var(--border); }
+  .col-title { font-size: 1.05rem; letter-spacing: 0.03em; color: var(--ink); }
+  .col-title span { display: block; font-size: 0.70rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--dust); margin-top: 3px; }
+  .system-badge { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.12em; padding: 4px 10px; border-radius: var(--radius); white-space: nowrap; flex-shrink: 0; }
   .badge-mas { background: var(--ink); color: var(--linen); }
   .badge-nma { background: var(--sienna-dk); color: var(--cream); }
 
-  /* ── Empty State ───────────────────────────────────────────────────────── */
-  .empty-state {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    gap: 14px;
-    padding: 48px 24px;
-    opacity: 0.5;
-  }
-  .empty-icon {
-    font-size: 2.2rem;
-    line-height: 1;
-  }
-  .empty-state p {
-    font-size: 0.82rem;
-    color: var(--dust);
-    max-width: 200px;
-    line-height: 1.5;
-  }
-
-  /* ── Loading State ─────────────────────────────────────────────────────── */
-  .loading-state {
-    display: none;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 16px;
-    padding: 64px 24px;
-    text-align: center;
-  }
+  /* ── Empty / Loading ───────────────────────────────────────────────────── */
+  .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 14px; padding: 48px 24px; opacity: 0.5; }
+  .empty-icon { font-size: 2.2rem; line-height: 1; }
+  .empty-state p { font-size: 0.82rem; color: var(--dust); max-width: 200px; line-height: 1.5; }
+  .loading-state { display: none; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 64px 24px; text-align: center; }
   .loading-state.visible { display: flex; }
-  .spinner {
-    width: 36px; height: 36px;
-    border: 2px solid var(--border);
-    border-top-color: var(--sienna);
-    border-radius: 50%;
-    animation: spin 0.9s linear infinite;
-  }
+  .spinner { width: 36px; height: 36px; border: 2px solid var(--border); border-top-color: var(--sienna); border-radius: 50%; animation: spin 0.9s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .loading-state p {
-    font-size: 0.80rem;
-    color: var(--dust);
-    font-style: italic;
-  }
+  .loading-state p { font-size: 0.80rem; color: var(--dust); font-style: italic; }
 
   /* ── Result Cards ──────────────────────────────────────────────────────── */
   .result-content { display: flex; flex-direction: column; gap: 18px; }
-
-  /* Verdict Banner */
-  .verdict-banner {
-    border-radius: var(--radius);
-    padding: 18px 20px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-  }
+  .verdict-banner { border-radius: var(--radius); padding: 18px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   .verdict-banner.approved { background: #e8f0e8; border-left: 4px solid var(--sage); }
   .verdict-banner.denied   { background: #f0e6e4; border-left: 4px solid var(--brick); }
-
-  .verdict-label {
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--dust);
-    margin-bottom: 3px;
-  }
-  .verdict-status {
-    font-size: 1.25rem;
-    letter-spacing: 0.04em;
-    color: var(--ink);
-  }
+  .verdict-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--dust); margin-bottom: 3px; }
+  .verdict-status { font-size: 1.25rem; letter-spacing: 0.04em; color: var(--ink); }
   .verdict-banner.approved .verdict-status { color: #3a5c3a; }
   .verdict-banner.denied   .verdict-status { color: var(--brick); }
+  .verdict-payout { text-align: right; }
+  .payout-amount { font-size: 1.35rem; color: var(--ink); letter-spacing: 0.02em; }
+  .payout-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--dust); }
+  .timing-chip { display: inline-block; font-size: 0.70rem; font-family: var(--mono); color: var(--dust); background: var(--linen-3); border: 1px solid var(--border); padding: 3px 10px; border-radius: var(--radius); letter-spacing: 0.04em; }
 
-  .verdict-payout {
-    text-align: right;
-  }
-  .payout-amount {
-    font-size: 1.35rem;
-    color: var(--ink);
-    letter-spacing: 0.02em;
-  }
-  .payout-label {
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--dust);
-  }
+  /* ── Identity warning banner ───────────────────────────────────────────── */
+  .identity-banner { background: #f5e6e2; border: 1px solid #d4a8a0; border-left: 4px solid var(--brick); border-radius: var(--radius); padding: 12px 16px; font-size: 0.80rem; color: var(--brick); line-height: 1.5; }
+  .identity-banner strong { display: block; margin-bottom: 3px; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.10em; }
 
-  /* Timing chip */
-  .timing-chip {
-    display: inline-block;
-    font-size: 0.70rem;
-    font-family: var(--mono);
-    color: var(--dust);
-    background: var(--linen-3);
-    border: 1px solid var(--border);
-    padding: 3px 10px;
-    border-radius: var(--radius);
-    letter-spacing: 0.04em;
-  }
-
-  /* Section cards */
-  .card {
-    background: var(--cream);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    overflow: hidden;
-  }
+  .card { background: var(--cream); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
   .nma-col .card { background: var(--linen); }
-
-  .card-header {
-    padding: 10px 16px;
-    background: var(--linen-3);
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
+  .card-header { padding: 10px 16px; background: var(--linen-3); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .nma-col .card-header { background: var(--linen-2); }
-  .card-title {
-    font-size: 0.70rem;
-    text-transform: uppercase;
-    letter-spacing: 0.13em;
-    color: var(--ink-3);
-  }
+  .card-title { font-size: 0.70rem; text-transform: uppercase; letter-spacing: 0.13em; color: var(--ink-3); }
   .card-body { padding: 14px 16px; }
 
-  /* Pill badges */
-  .pill {
-    display: inline-block;
-    font-size: 0.66rem;
-    text-transform: uppercase;
-    letter-spacing: 0.10em;
-    padding: 3px 9px;
-    border-radius: 12px;
-    font-family: var(--mono);
-  }
+  .pill { display: inline-block; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.10em; padding: 3px 9px; border-radius: 12px; font-family: var(--mono); }
   .pill-green  { background: #daeada; color: #2d5a2d; }
   .pill-red    { background: #f0dbd8; color: #7a2e24; }
   .pill-amber  { background: #f0eadb; color: #6b4d1a; }
   .pill-gray   { background: var(--linen-3); color: var(--dust); }
-  .pill-ink    { background: var(--ink-2); color: var(--linen); }
 
-  /* Flag grid */
-  .flag-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    margin-top: 10px;
-  }
-  .flag-item {
-    background: var(--linen-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 8px 12px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
+  .flag-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .flag-item { background: var(--linen-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; display: flex; align-items: center; gap: 8px; }
   .nma-col .flag-item { background: var(--linen-3); }
-  .flag-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
+  .flag-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .flag-dot.on  { background: var(--brick); }
   .flag-dot.off { background: #9ab09a; }
-  .flag-text {
-    font-size: 0.74rem;
-    color: var(--ink-3);
-  }
-  .flag-val {
-    font-size: 0.68rem;
-    margin-left: auto;
-    color: var(--dust);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
+  .flag-text { font-size: 0.74rem; color: var(--ink-3); }
+  .flag-val { font-size: 0.68rem; margin-left: auto; color: var(--dust); text-transform: uppercase; letter-spacing: 0.08em; }
 
-  /* Policy rows */
-  .policy-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    padding: 7px 0;
-    border-bottom: 1px solid var(--border);
-    gap: 12px;
-  }
+  .policy-row { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--border); gap: 12px; }
   .policy-row:last-child { border-bottom: none; }
-  .policy-key {
-    font-size: 0.74rem;
-    color: var(--dust);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    flex-shrink: 0;
-  }
-  .policy-val {
-    font-size: 0.82rem;
-    color: var(--ink-2);
-    text-align: right;
-    word-break: break-word;
-  }
+  .policy-key { font-size: 0.74rem; color: var(--dust); text-transform: uppercase; letter-spacing: 0.08em; flex-shrink: 0; }
+  .policy-val { font-size: 0.82rem; color: var(--ink-2); text-align: right; word-break: break-word; }
 
-  /* Reasoning block */
-  .reasoning-block {
-    font-size: 0.82rem;
-    color: var(--ink-3);
-    line-height: 1.65;
-    background: var(--linen-2);
-    border-radius: var(--radius);
-    padding: 12px 14px;
-    border-left: 3px solid var(--border-dk);
-    font-style: italic;
-  }
+  .reasoning-block { font-size: 0.82rem; color: var(--ink-3); line-height: 1.65; background: var(--linen-2); border-radius: var(--radius); padding: 12px 14px; border-left: 3px solid var(--border-dk); font-style: italic; }
   .nma-col .reasoning-block { background: var(--linen-3); }
 
-  /* Anomaly list */
-  .anomaly-item {
-    font-size: 0.78rem;
-    color: var(--ink-3);
-    padding: 6px 10px;
-    background: #f5ebe8;
-    border-radius: var(--radius);
-    border-left: 3px solid var(--brick);
-    margin-bottom: 6px;
-    line-height: 1.5;
-  }
+  .anomaly-item { font-size: 0.78rem; color: var(--ink-3); padding: 6px 10px; background: #f5ebe8; border-radius: var(--radius); border-left: 3px solid var(--brick); margin-bottom: 6px; line-height: 1.5; }
   .anomaly-item:last-child { margin-bottom: 0; }
 
-  /* Errors */
-  .error-banner {
-    background: #f0dbd8;
-    border: 1px solid #d4a8a0;
-    border-radius: var(--radius);
-    padding: 12px 16px;
-    font-size: 0.80rem;
-    color: var(--brick);
-    line-height: 1.5;
-  }
+  .warning-item { font-size: 0.78rem; color: #5c3a00; padding: 6px 10px; background: #f5f0e6; border-radius: var(--radius); border-left: 3px solid var(--amber); margin-bottom: 6px; line-height: 1.5; }
+  .warning-item:last-child { margin-bottom: 0; }
 
-  /* ── Architecture note ─────────────────────────────────────────────────── */
-  .arch-note {
-    font-size: 0.70rem;
-    color: var(--dust);
-    font-style: italic;
-    line-height: 1.55;
-  }
+  .error-banner { background: #f0dbd8; border: 1px solid #d4a8a0; border-radius: var(--radius); padding: 12px 16px; font-size: 0.80rem; color: var(--brick); line-height: 1.5; }
 
-  /* ── Footer ────────────────────────────────────────────────────────────── */
-  .footer {
-    background: var(--ink-2);
-    color: var(--dust);
-    font-size: 0.68rem;
-    text-align: center;
-    padding: 12px 48px;
-    letter-spacing: 0.08em;
-  }
-
-  /* ── Divider ───────────────────────────────────────────────────────────── */
-  .divider {
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 2px 0;
-  }
+  .arch-note { font-size: 0.70rem; color: var(--dust); font-style: italic; line-height: 1.55; }
+  .divider { border: none; border-top: 1px solid var(--border); margin: 2px 0; }
 
   /* ── Comparison bar ────────────────────────────────────────────────────── */
-  .compare-bar {
-    display: none;
-    background: var(--linen-2);
-    border-top: 1px solid var(--border);
-    padding: 14px 48px;
-    gap: 32px;
-    flex-wrap: wrap;
-    align-items: center;
-  }
+  .compare-bar { display: none; background: var(--linen-2); border-top: 1px solid var(--border); padding: 14px 48px; gap: 32px; flex-wrap: wrap; align-items: center; }
   .compare-bar.visible { display: flex; }
-  .compare-item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .compare-key {
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--dust);
-  }
-  .compare-val {
-    font-size: 0.92rem;
-    color: var(--ink);
-  }
-  .compare-agree  { color: #3a5c3a; }
+  .compare-item { display: flex; flex-direction: column; gap: 2px; }
+  .compare-key { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--dust); }
+  .compare-val { font-size: 0.92rem; color: var(--ink); }
+  .compare-agree    { color: #3a5c3a; }
   .compare-disagree { color: var(--brick); }
 
-  /* ── Responsive ────────────────────────────────────────────────────────── */
-  @media (max-width: 1100px) {
-    .workspace { grid-template-columns: 300px 1fr; }
-  }
+  @media (max-width: 1100px) { .workspace { grid-template-columns: 320px 1fr; } }
   @media (max-width: 900px) {
     .workspace { grid-template-columns: 1fr; grid-template-rows: auto auto; }
     .results-panel { grid-template-columns: 1fr; }
@@ -631,6 +256,7 @@
   <button class="preset-btn" onclick="loadPreset('collusion_ring')">⊘ Collusion Ring</button>
   <button class="preset-btn" onclick="loadPreset('semantic_exclusion')">◈ Semantic Exclusion</button>
   <button class="preset-btn" onclick="loadPreset('frequent_claimant')">↑ Frequent Claimant</button>
+  <button class="preset-btn" onclick="loadPreset('identity_mismatch')" style="border-color:var(--brick);color:var(--brick)">✗ Identity Mismatch</button>
   <button class="preset-btn" onclick="clearForm()" style="margin-left:auto;color:var(--dust);">✕ Clear</button>
 </div>
 
@@ -640,6 +266,25 @@
   <!-- Input Panel -->
   <aside class="input-panel">
     <p class="panel-heading">Claim Input</p>
+
+    <!-- Claimant Name — the new field -->
+    <div class="field-group">
+      <label for="claimantName">Claimant Name <em style="font-weight:normal;color:var(--dust);font-size:0.88em">(must match DB record)</em></label>
+      <div class="name-row">
+        <input type="text" id="claimantName" placeholder="e.g. Jane Smith" autocomplete="off"
+               oninput="hideCustomerCard()" onkeydown="if(event.key==='Enter'){event.preventDefault();doLookup();}">
+        <button type="button" class="btn-lookup" id="btnVerify" onclick="doLookup()" title="Check name against customer database">Verify</button>
+      </div>
+    </div>
+
+    <!-- Customer profile card (appears after lookup) -->
+    <div class="customer-card" id="customerCard">
+      <div class="customer-card-header" id="customerCardHeader">
+        <span id="customerCardTitle">—</span>
+        <span id="customerCardBadge"></span>
+      </div>
+      <div class="customer-card-body" id="customerCardBody"></div>
+    </div>
 
     <div class="field-group">
       <label for="incidentType">Incident Type</label>
@@ -654,7 +299,7 @@
 
     <div class="field-group">
       <label for="narrative">Incident Narrative</label>
-      <textarea id="narrative" rows="7" placeholder="Describe the incident in detail…"></textarea>
+      <textarea id="narrative" rows="6" placeholder="Describe the incident in detail…"></textarea>
     </div>
 
     <div class="field-group">
@@ -670,7 +315,7 @@
     <div class="field-group">
       <label for="ocrEstimate">OCR Repair Estimate ($) <em style="font-weight:normal;font-size:0.88em;color:var(--dust)">optional</em></label>
       <input type="number" id="ocrEstimate" placeholder="Leave blank to match loss amount" min="0">
-      <span class="ocr-note">Set to a much lower value to trigger the staging fraud signal.</span>
+      <span class="ocr-note">Set much lower than the loss amount to trigger the staging fraud signal.</span>
     </div>
 
     <hr class="divider">
@@ -687,7 +332,10 @@
 
     <p class="arch-note">
       <strong>MAS</strong> — LangGraph pipeline with parallel specialist agents.<br>
-      <strong>NMA</strong> — Monolithic single-LLM adjudicator baseline.
+      <strong>NMA</strong> — Monolithic single-LLM adjudicator baseline.<br><br>
+      <strong>Claimant name</strong> is looked up in Customer_Profiles. An unrecognised
+      name causes an identity mismatch denial. A recognised name pulls in that
+      customer's real history, policy limits, and fraud signals.
     </p>
   </aside>
 
@@ -703,17 +351,14 @@
         </div>
         <span class="system-badge badge-mas">MAS</span>
       </div>
-
       <div class="loading-state" id="masLoading">
         <div class="spinner"></div>
         <p>Running verification → policy &amp; fraud → decision…</p>
       </div>
-
       <div class="empty-state" id="masEmpty">
         <div class="empty-icon">◇</div>
         <p>Select a scenario and run the pipeline to see results here.</p>
       </div>
-
       <div class="result-content" id="masResult" style="display:none"></div>
     </div>
 
@@ -726,65 +371,38 @@
         </div>
         <span class="system-badge badge-nma">NMA</span>
       </div>
-
       <div class="loading-state" id="nmaLoading">
         <div class="spinner"></div>
         <p>Running monolithic adjudication…</p>
       </div>
-
       <div class="empty-state" id="nmaEmpty">
         <div class="empty-icon">◇</div>
         <p>Select a scenario and run the pipeline to see results here.</p>
       </div>
-
       <div class="result-content" id="nmaResult" style="display:none"></div>
     </div>
 
-  </div><!-- /results-panel -->
-</div><!-- /workspace -->
-
-<!-- ── Comparison Bar ─────────────────────────────────────────────────────── -->
-<div class="compare-bar" id="compareBar">
-  <div class="compare-item">
-    <span class="compare-key">Agreement</span>
-    <span class="compare-val" id="cmpAgree">—</span>
-  </div>
-  <div class="compare-item">
-    <span class="compare-key">MAS Decision</span>
-    <span class="compare-val" id="cmpMasDecision">—</span>
-  </div>
-  <div class="compare-item">
-    <span class="compare-key">NMA Decision</span>
-    <span class="compare-val" id="cmpNmaDecision">—</span>
-  </div>
-  <div class="compare-item">
-    <span class="compare-key">MAS Payout</span>
-    <span class="compare-val" id="cmpMasPayout">—</span>
-  </div>
-  <div class="compare-item">
-    <span class="compare-key">NMA Payout</span>
-    <span class="compare-val" id="cmpNmaPayout">—</span>
-  </div>
-  <div class="compare-item">
-    <span class="compare-key">MAS Time</span>
-    <span class="compare-val" id="cmpMasTime">—</span>
-  </div>
-  <div class="compare-item">
-    <span class="compare-key">NMA Time</span>
-    <span class="compare-val" id="cmpNmaTime">—</span>
   </div>
 </div>
 
-<footer class="footer">
-  Insurance Claim Adjudication Research Framework &nbsp;·&nbsp; MAS vs NMA Benchmark
-</footer>
+<!-- ── Comparison Bar ─────────────────────────────────────────────────────── -->
+<div class="compare-bar" id="compareBar">
+  <div class="compare-item"><span class="compare-key">Agreement</span><span class="compare-val" id="cmpAgree">—</span></div>
+  <div class="compare-item"><span class="compare-key">MAS Decision</span><span class="compare-val" id="cmpMasDecision">—</span></div>
+  <div class="compare-item"><span class="compare-key">NMA Decision</span><span class="compare-val" id="cmpNmaDecision">—</span></div>
+  <div class="compare-item"><span class="compare-key">MAS Payout</span><span class="compare-val" id="cmpMasPayout">—</span></div>
+  <div class="compare-item"><span class="compare-key">NMA Payout</span><span class="compare-val" id="cmpNmaPayout">—</span></div>
+  <div class="compare-item"><span class="compare-key">MAS Time</span><span class="compare-val" id="cmpMasTime">—</span></div>
+  <div class="compare-item"><span class="compare-key">NMA Time</span><span class="compare-val" id="cmpNmaTime">—</span></div>
+</div>
 
 <script>
 /* ─────────────────────────────────────────────────────────────────────────── */
-/* Presets                                                                      */
+/* Presets                                                                       */
 /* ─────────────────────────────────────────────────────────────────────────── */
 const PRESETS = {
   normal: {
+    claimant_name: "",   // leave blank — borrowing behaviour, no name check
     incident_type: "Rear-end",
     narrative: "While stopped at a red light on Main Street, the claimant's vehicle was struck from behind by a white sedan travelling at approximately 30 mph. The other driver admitted fault at the scene. A police report was filed. Both airbags deployed and the rear bumper, trunk lid, and exhaust system require replacement.",
     estimated_loss: 8500,
@@ -792,6 +410,7 @@ const PRESETS = {
     ocr_estimate: "",
   },
   staged_accident: {
+    claimant_name: "",
     incident_type: "Rear-end",
     narrative: "A massive multi-vehicle pileup occurred on the interstate involving at least fourteen vehicles including three semi-trucks. Multiple lanes were blocked for six hours. Emergency services, fire department, and two ambulances were on scene. The claimant's vehicle was caught in the centre of the pile-up and sustained extensive structural damage throughout the chassis and engine bay.",
     estimated_loss: 18000,
@@ -799,6 +418,7 @@ const PRESETS = {
     ocr_estimate: 200,
   },
   collusion_ring: {
+    claimant_name: "",
     incident_type: "Vandalism",
     narrative: "Claimant returned to the car park after shopping to find the driver-side door heavily dented and the wing mirror broken off. No witnesses were present and no CCTV footage is available from the car park.",
     estimated_loss: 3200,
@@ -806,6 +426,7 @@ const PRESETS = {
     ocr_estimate: "",
   },
   semantic_exclusion: {
+    claimant_name: "",
     incident_type: "Total Loss",
     narrative: "The claimant was driving at high speed on a closed circuit track during a private performance driving event. The vehicle lost traction on a hairpin corner at approximately 110 mph and struck the armco barrier. The chassis is bent and the engine bay sustained fire damage. The vehicle is a total loss.",
     estimated_loss: 24000,
@@ -813,11 +434,21 @@ const PRESETS = {
     ocr_estimate: "",
   },
   frequent_claimant: {
+    claimant_name: "",
     incident_type: "Vandalism",
     narrative: "Claimant reports the vehicle was vandalized overnight; all four tyres slashed and the word 'PAYBACK' keyed into the hood. No witnesses and no camera footage available in the area.",
     estimated_loss: 2400,
     repair_shop: "City Tyre & Body Shop",
     ocr_estimate: "",
+  },
+  identity_mismatch: {
+    claimant_name: "John Doe",   // almost certainly not in the DB
+    incident_type: "Rear-end",
+    narrative: "A standard rear-end collision at a traffic light. The claimant states the other driver was at fault.",
+    estimated_loss: 5000,
+    repair_shop: "Quick Fix Auto",
+    ocr_estimate: "",
+    _note: "Name 'John Doe' is not a seeded customer — this will trigger an identity denial.",
   },
 };
 
@@ -826,26 +457,115 @@ function loadPreset(name) {
   if (!p) return;
   document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
-  document.getElementById('incidentType').value = p.incident_type;
-  document.getElementById('narrative').value = p.narrative;
+  document.getElementById('claimantName').value  = p.claimant_name || "";
+  document.getElementById('incidentType').value  = p.incident_type;
+  document.getElementById('narrative').value     = p.narrative;
   document.getElementById('estimatedLoss').value = p.estimated_loss;
-  document.getElementById('repairShop').value = p.repair_shop;
-  document.getElementById('ocrEstimate').value = p.ocr_estimate || "";
+  document.getElementById('repairShop').value    = p.repair_shop;
+  document.getElementById('ocrEstimate').value   = p.ocr_estimate || "";
+  // Clear customer card when loading a preset
+  hideCustomerCard();
+  // Auto-lookup if a name was set
+  if (p.claimant_name) doLookup();
 }
 
 function clearForm() {
   document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('incidentType').value = "Rear-end";
-  document.getElementById('narrative').value = "";
+  document.getElementById('claimantName').value  = "";
+  document.getElementById('incidentType').value  = "Rear-end";
+  document.getElementById('narrative').value     = "";
   document.getElementById('estimatedLoss').value = "";
-  document.getElementById('repairShop').value = "";
-  document.getElementById('ocrEstimate').value = "";
+  document.getElementById('repairShop').value    = "";
+  document.getElementById('ocrEstimate').value   = "";
+  hideCustomerCard();
   resetPanel('mas'); resetPanel('nma');
   document.getElementById('compareBar').classList.remove('visible');
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/* Health check                                                                  */
+/* Customer name lookup                                                          */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+async function doLookup() {
+  const name = document.getElementById('claimantName').value.trim();
+  console.log('[Verify] clicked, name="' + name + '"');
+  if (!name) { hideCustomerCard(); return; }
+
+  const btn = document.getElementById('btnVerify');
+  btn.textContent = '…';
+  btn.disabled = true;
+
+  try {
+    console.log('[Verify] fetching /api/lookup_customer');
+    const r = await fetch('/api/lookup_customer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    console.log('[Verify] response status:', r.status);
+    const json = await r.json();
+    console.log('[Verify] response json:', json);
+    renderCustomerCard(name, json);
+  } catch(e) {
+    console.error('[Verify] fetch error:', e);
+    renderCustomerCard(name, { found: false, message: 'Lookup failed: ' + e.message });
+  } finally {
+    btn.textContent = 'Verify';
+    btn.disabled = false;
+  }
+}
+
+function renderCustomerCard(queriedName, data) {
+  const card   = document.getElementById('customerCard');
+  const header = document.getElementById('customerCardHeader');
+  const title  = document.getElementById('customerCardTitle');
+  const badge  = document.getElementById('customerCardBadge');
+  const body   = document.getElementById('customerCardBody');
+
+  card.classList.add('visible');
+
+  if (data.found) {
+    const isRisky = data.risk_rating === 'High Risk' || data.risk_rating === 'Watchlist';
+    header.className = 'customer-card-header found';
+    title.textContent = '✓ Customer found';
+    badge.textContent = '';
+
+    const riskColor = data.risk_rating === 'High Risk' ? 'var(--brick)'
+                    : data.risk_rating === 'Watchlist'  ? 'var(--amber)'
+                    : '#3a5c3a';
+    const riskIcon  = data.risk_rating === 'High Risk' ? '⚠ Risky Client'
+                    : data.risk_rating === 'Watchlist'  ? '~ Watchlist'
+                    : '✓ Safe Client';
+
+    body.innerHTML = `
+      ${custRow('Customer ID', `<span class="cust-val" style="font-family:var(--mono);font-size:0.72rem">${escHtml(data.customer_id)}</span>`, true)}
+      ${custRow('Status', `<span class="cust-val" style="color:${riskColor};font-weight:bold">${riskIcon}</span>`, true)}
+    `;
+  } else {
+    header.className = 'customer-card-header not-found';
+    title.textContent = '✗ Not in database';
+    badge.textContent = '';
+    body.innerHTML = `
+      <div style="font-size:0.78rem;color:var(--brick);line-height:1.55">
+        <strong>${escHtml(queriedName)}</strong> does not exist in Customer_Profiles.<br>
+        This claim will be <strong>denied — identity unverified</strong>.
+      </div>
+    `;
+  }
+}
+
+function custRow(key, val, rawHtml = false, style = '') {
+  const valHtml = rawHtml ? val : `<span class="cust-val" style="${style}">${val}</span>`;
+  return `<div class="cust-row"><span class="cust-key">${key}</span>${valHtml}</div>`;
+}
+
+function hideCustomerCard() {
+  document.getElementById('customerCard').classList.remove('visible');
+  document.getElementById('customerCardBody').innerHTML = '';
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Health check                                                                   */
 /* ─────────────────────────────────────────────────────────────────────────── */
 async function checkHealth() {
   try {
@@ -862,24 +582,26 @@ async function checkHealth() {
 checkHealth();
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/* Form helper                                                                   */
+/* Form helper                                                                    */
 /* ─────────────────────────────────────────────────────────────────────────── */
 function getFormData() {
-  const narrative = document.getElementById('narrative').value.trim();
+  const narrative     = document.getElementById('narrative').value.trim();
   const estimated_loss = document.getElementById('estimatedLoss').value;
-  const repair_shop = document.getElementById('repairShop').value.trim();
+  const repair_shop   = document.getElementById('repairShop').value.trim();
 
-  if (!narrative) { alert('Please enter an incident narrative.'); return null; }
+  if (!narrative)      { alert('Please enter an incident narrative.'); return null; }
   if (!estimated_loss) { alert('Please enter an estimated loss amount.'); return null; }
-  if (!repair_shop) { alert('Please enter a repair shop name.'); return null; }
+  if (!repair_shop)    { alert('Please enter a repair shop name.'); return null; }
 
-  const ocr = document.getElementById('ocrEstimate').value;
+  const ocr  = document.getElementById('ocrEstimate').value;
+  const name = document.getElementById('claimantName').value.trim();
   return {
-    incident_type: document.getElementById('incidentType').value,
+    claimant_name:  name,
+    incident_type:  document.getElementById('incidentType').value,
     narrative,
     estimated_loss: parseFloat(estimated_loss),
     repair_shop,
-    ocr_estimate: ocr ? parseFloat(ocr) : null,
+    ocr_estimate:   ocr ? parseFloat(ocr) : null,
   };
 }
 
@@ -890,7 +612,7 @@ function setButtons(disabled) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/* Panel state helpers                                                            */
+/* Panel state helpers                                                             */
 /* ─────────────────────────────────────────────────────────────────────────── */
 function resetPanel(sys) {
   document.getElementById(sys+'Loading').classList.remove('visible');
@@ -910,7 +632,7 @@ function showResult(sys) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/* Result rendering                                                               */
+/* Result rendering                                                                */
 /* ─────────────────────────────────────────────────────────────────────────── */
 function fmt$(n) { return '$' + parseFloat(n||0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}); }
 
@@ -920,15 +642,11 @@ function pillRisk(score) {
   if (score === 'Medium') return '<span class="pill pill-amber">Medium</span>';
   return '<span class="pill pill-green">Low</span>';
 }
-function pillBool(val, trueLabel='Yes', falseLabel='No') {
-  return val
-    ? `<span class="pill pill-red">${trueLabel}</span>`
-    : `<span class="pill pill-green">${falseLabel}</span>`;
+function pillBool(val) {
+  return val ? '<span class="pill pill-red">Yes</span>' : '<span class="pill pill-green">No</span>';
 }
 function pillCovered(val) {
-  return val
-    ? '<span class="pill pill-green">Covered</span>'
-    : '<span class="pill pill-red">Not Covered</span>';
+  return val ? '<span class="pill pill-green">Covered</span>' : '<span class="pill pill-red">Not Covered</span>';
 }
 
 function renderResult(sys, result, elapsed) {
@@ -939,13 +657,25 @@ function renderResult(sys, result, elapsed) {
   const approved  = fd.approved === true || fd.approved === 'true';
   const payout    = parseFloat(result.final_payout || 0);
   const reasoning = fd.step_by_step_reasoning || '';
-  const anomalies = fr.anomalies || [];
-  const errors    = result.errors || [];
+  const anomalies = fr.anomalies  || [];
   const warnings  = result.warnings || [];
+  const errors    = result.errors   || [];
 
   let html = '';
 
-  // Verdict banner
+  // ── Identity / warning banners (shown before the verdict) ─────────────────
+  const identityWarning = warnings.find(w => w.toLowerCase().includes('identity') ||
+                                             w.toLowerCase().includes('not registered'));
+  if (identityWarning) {
+    html += `
+      <div class="identity-banner">
+        <strong>⚠ Identity Mismatch</strong>
+        ${escHtml(identityWarning)}
+      </div>
+    `;
+  }
+
+  // ── Verdict banner ─────────────────────────────────────────────────────────
   html += `
     <div class="verdict-banner ${approved ? 'approved' : 'denied'}">
       <div>
@@ -960,7 +690,7 @@ function renderResult(sys, result, elapsed) {
     <div><span class="timing-chip">⏱ ${elapsed}s</span></div>
   `;
 
-  // Fraud Report
+  // ── Fraud Report ───────────────────────────────────────────────────────────
   html += `
     <div class="card">
       <div class="card-header">
@@ -972,17 +702,14 @@ function renderResult(sys, result, elapsed) {
           ${flagItem('Frequent Claimant', fr.frequent_claims_flag)}
           ${flagItem('Collusion Ring',    fr.collusion_flag)}
           ${flagItem('Staged Accident',   fr.staging_flag)}
-          ${flagItem('Exclusion Triggered', pv.exclusion_triggered)}
+          ${flagItem('Excl. Triggered',  pv.exclusion_triggered)}
         </div>
-        ${anomalies.length ? `
-          <div style="margin-top:14px">
-            ${anomalies.map(a => `<div class="anomaly-item">${escHtml(a)}</div>`).join('')}
-          </div>` : ''}
+        ${anomalies.length ? `<div style="margin-top:14px">${anomalies.map(a => `<div class="anomaly-item">${escHtml(a)}</div>`).join('')}</div>` : ''}
       </div>
     </div>
   `;
 
-  // Policy Verdict
+  // ── Policy Verdict ─────────────────────────────────────────────────────────
   html += `
     <div class="card">
       <div class="card-header">
@@ -994,38 +721,28 @@ function renderResult(sys, result, elapsed) {
         ${policyRow('Deductible', fmt$(pv.deductible))}
         ${policyRow('Policy Limit', fmt$(pv.policy_limit))}
         ${pv.exclusion_triggered ? policyRow('Exclusion', escHtml(pv.exclusion_reason||'—'), true) : ''}
-        ${pv.coverage_scope ? `
-          <div style="margin-top:10px;font-size:0.76rem;color:var(--dust);line-height:1.55">
-            <em>${escHtml(pv.coverage_scope.slice(0,180))}${pv.coverage_scope.length > 180 ? '…' : ''}</em>
-          </div>` : ''}
+        ${pv.coverage_scope ? `<div style="margin-top:10px;font-size:0.76rem;color:var(--dust);line-height:1.55"><em>${escHtml(pv.coverage_scope.slice(0,180))}${pv.coverage_scope.length>180?'…':''}</em></div>` : ''}
       </div>
     </div>
   `;
 
-  // Reasoning
+  // ── Reasoning ──────────────────────────────────────────────────────────────
   if (reasoning) {
     html += `
       <div class="card">
         <div class="card-header"><span class="card-title">Reasoning</span></div>
-        <div class="card-body">
-          <div class="reasoning-block">${escHtml(reasoning)}</div>
-        </div>
+        <div class="card-body"><div class="reasoning-block">${escHtml(reasoning)}</div></div>
       </div>
     `;
   }
 
-  // Errors / warnings
-  if (errors.length || warnings.length) {
-    html += `<div class="card">
-      <div class="card-header"><span class="card-title">Flags &amp; Errors</span></div>
-      <div class="card-body" style="display:flex;flex-direction:column;gap:8px">
-    `;
-    errors.forEach(e => {
-      html += `<div class="error-banner">${escHtml(e)}</div>`;
-    });
-    warnings.forEach(w => {
-      html += `<div class="anomaly-item" style="border-left-color:var(--sienna);background:#f5f0ea">${escHtml(w)}</div>`;
-    });
+  // ── Non-identity warnings ──────────────────────────────────────────────────
+  const otherWarnings = warnings.filter(w => !w.toLowerCase().includes('identity') &&
+                                             !w.toLowerCase().includes('not registered'));
+  if (otherWarnings.length || errors.length) {
+    html += `<div class="card"><div class="card-header"><span class="card-title">Flags &amp; Alerts</span></div><div class="card-body" style="display:flex;flex-direction:column;gap:8px">`;
+    otherWarnings.forEach(w => { html += `<div class="warning-item">${escHtml(w)}</div>`; });
+    errors.forEach(e => { html += `<div class="error-banner">${escHtml(e)}</div>`; });
     html += `</div></div>`;
   }
 
@@ -1035,27 +752,17 @@ function renderResult(sys, result, elapsed) {
 
 function flagItem(label, val) {
   const on = val === true || val === 'true' || val === 'yes';
-  return `
-    <div class="flag-item">
-      <div class="flag-dot ${on ? 'on' : 'off'}"></div>
-      <span class="flag-text">${label}</span>
-      <span class="flag-val">${on ? 'yes' : 'no'}</span>
-    </div>`;
+  return `<div class="flag-item"><div class="flag-dot ${on?'on':'off'}"></div><span class="flag-text">${label}</span><span class="flag-val">${on?'yes':'no'}</span></div>`;
 }
-
 function policyRow(key, val, warn=false) {
-  return `<div class="policy-row">
-    <span class="policy-key">${key}</span>
-    <span class="policy-val" style="${warn ? 'color:var(--brick)' : ''}">${val}</span>
-  </div>`;
+  return `<div class="policy-row"><span class="policy-key">${key}</span><span class="policy-val" style="${warn?'color:var(--brick)':''}">${val}</span></div>`;
 }
-
 function escHtml(str) {
   return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/* Comparison bar                                                                 */
+/* Comparison bar                                                                  */
 /* ─────────────────────────────────────────────────────────────────────────── */
 let _masState = null;
 let _nmaState = null;
@@ -1064,11 +771,9 @@ function updateCompare() {
   if (!_masState || !_nmaState) return;
   const bar = document.getElementById('compareBar');
   bar.classList.add('visible');
-
   const masApproved = (_masState.result.final_decision||{}).approved;
   const nmaApproved = (_nmaState.result.final_decision||{}).approved;
   const agree = masApproved === nmaApproved;
-
   const el = id => document.getElementById(id);
   el('cmpAgree').textContent       = agree ? '✓ Agree' : '✗ Disagree';
   el('cmpAgree').className         = 'compare-val ' + (agree ? 'compare-agree' : 'compare-disagree');
@@ -1081,17 +786,14 @@ function updateCompare() {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/* API calls                                                                      */
+/* API calls                                                                       */
 /* ─────────────────────────────────────────────────────────────────────────── */
 async function runMAS() {
   const data = getFormData(); if (!data) return;
   setButtons(true); showLoading('mas'); _masState = null;
   document.getElementById('compareBar').classList.remove('visible');
   try {
-    const r = await fetch('/api/run_mas', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(data),
-    });
+    const r = await fetch('/api/run_mas', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
     const json = await r.json();
     if (!json.ok) throw new Error(json.error || 'Pipeline error');
     _masState = json;
@@ -1108,10 +810,7 @@ async function runNMA() {
   setButtons(true); showLoading('nma'); _nmaState = null;
   document.getElementById('compareBar').classList.remove('visible');
   try {
-    const r = await fetch('/api/run_nma', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(data),
-    });
+    const r = await fetch('/api/run_nma', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
     const json = await r.json();
     if (!json.ok) throw new Error(json.error || 'Pipeline error');
     _nmaState = json;
@@ -1130,10 +829,7 @@ async function runBoth() {
   _masState = null; _nmaState = null;
   document.getElementById('compareBar').classList.remove('visible');
   try {
-    const r = await fetch('/api/run_both', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(data),
-    });
+    const r = await fetch('/api/run_both', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
     const json = await r.json();
     if (!json.ok) throw new Error(json.error || 'Pipeline error');
     _masState = { result: json.mas.result, elapsed_s: json.mas.elapsed_s };
