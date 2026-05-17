@@ -8,6 +8,12 @@ Insurance adjudication is a particularly demanding domain for this comparison. A
 
 ---
 
+
+https://github.com/user-attachments/assets/d77969fd-dca6-46eb-b85a-99ad8e31554e
+
+
+
+
 ## Tech Stack
 
 | Component | Technology |
