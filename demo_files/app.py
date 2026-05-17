@@ -320,6 +320,39 @@ def _shape_nma_result(claim_id, res, ctx):
     }
 
 
+def _get_identity_mismatch_result(claim_id: str, claimant_name: str) -> dict:
+    return {
+        "claim_id": claim_id,
+        "final_payout": 0.0,
+        "final_decision": {
+            "approved": False,
+            "step_by_step_reasoning": f"Identity verification failed. The claimant name '{claimant_name}' does not match any known customer record.",
+            "denial_reason": "Identity Mismatch",
+        },
+        "policy_verdict": {
+            "incident_covered": False,
+            "exclusion_triggered": False,
+            "exclusion_reason": "",
+            "coverage_scope": "N/A",
+            "exclusions": "N/A",
+            "policy_limit": 0.0,
+            "aggregate_limit": 0.0,
+            "deductible": 0.0,
+            "total_historical_payout": 0.0,
+            "remaining_limit": 0.0,
+        },
+        "fraud_report": {
+            "risk_score": "High",
+            "frequent_claims_flag": False,
+            "collusion_flag": False,
+            "staging_flag": False,
+            "anomalies": [],
+            "reasoning": "Identity unverified.",
+        },
+        "errors": [f"Claimant name '{claimant_name}' is not registered in Customer_Profiles."],
+        "warnings": ["Claim denied — identity unverified. Pipeline aborted to save compute."],
+    }
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -346,17 +379,11 @@ def run_mas():
             claimant_name   = data.get("claimant_name", "").strip(),
             ocr_estimate    = float(data["ocr_estimate"]) if data.get("ocr_estimate") else None,
         )
-        result  = _get_mas()(claim_id)
 
-        # Surface the identity mismatch prominently in the result
         if mismatch:
-            result.setdefault("warnings", [])
-            if not any("identity" in w.lower() or "not found" in w.lower()
-                       for w in result.get("warnings", [])):
-                result["warnings"] = [
-                    f"Claimant name '{data.get('claimant_name')}' is not registered "
-                    "in Customer_Profiles. Claim denied — identity unverified."
-                ] + list(result.get("warnings", []))
+            result = _get_identity_mismatch_result(claim_id, data.get("claimant_name", "").strip())
+        else:
+            result  = _get_mas()(claim_id)
 
         elapsed = round(time.perf_counter() - t0, 2)
         return jsonify({"ok": True, "elapsed_s": elapsed, "result": _serialize(result)})
@@ -383,21 +410,18 @@ def run_nma():
             ocr_estimate    = float(data["ocr_estimate"]) if data.get("ocr_estimate") else None,
         )
 
-        async def _run():
-            ctx = await _get_nma_context()(claim_id)
-            res = await _get_nma_agent()(ctx)
-            return ctx, res
-
-        ctx, res = asyncio.run(_run())
-        elapsed  = round(time.perf_counter() - t0, 2)
-        result   = _shape_nma_result(claim_id, res, ctx)
-
         if mismatch:
-            result["warnings"] = [
-                f"Claimant name '{data.get('claimant_name')}' is not registered "
-                "in Customer_Profiles. Claim denied — identity unverified."
-            ] + list(result.get("warnings", []))
+            result = _get_identity_mismatch_result(claim_id, data.get("claimant_name", "").strip())
+        else:
+            async def _run():
+                ctx = await _get_nma_context()(claim_id)
+                res = await _get_nma_agent()(ctx)
+                return ctx, res
 
+            ctx, res = asyncio.run(_run())
+            result   = _shape_nma_result(claim_id, res, ctx)
+
+        elapsed = round(time.perf_counter() - t0, 2)
         return jsonify({"ok": True, "elapsed_s": elapsed, "result": _serialize(result)})
     except Exception as exc:
         logger.exception("NMA pipeline error")
@@ -422,33 +446,29 @@ def run_both():
             ocr_estimate    = float(data["ocr_estimate"]) if data.get("ocr_estimate") else None,
         )
 
-        identity_warning = (
-            f"Claimant name '{data.get('claimant_name')}' is not registered "
-            "in Customer_Profiles. Claim denied — identity unverified."
-            if mismatch else None
-        )
+        if mismatch:
+            short_res = _get_identity_mismatch_result(claim_id, data.get("claimant_name", "").strip())
+            mas_result = short_res
+            nma_result = short_res
+            mas_elapsed = 0.0
+            nma_elapsed = 0.0
+        else:
+            # ── MAS ───────────────────────────────────────────────────────────────
+            mas_t0      = time.perf_counter()
+            mas_result  = _get_mas()(claim_id)
+            mas_elapsed = round(time.perf_counter() - mas_t0, 2)
 
-        # ── MAS ───────────────────────────────────────────────────────────────
-        mas_t0      = time.perf_counter()
-        mas_result  = _get_mas()(claim_id)
-        mas_elapsed = round(time.perf_counter() - mas_t0, 2)
-        if identity_warning:
-            mas_result.setdefault("warnings", [])
-            mas_result["warnings"] = [identity_warning] + list(mas_result["warnings"])
+            # ── NMA ───────────────────────────────────────────────────────────────
+            nma_t0 = time.perf_counter()
 
-        # ── NMA ───────────────────────────────────────────────────────────────
-        nma_t0 = time.perf_counter()
+            async def _run_nma():
+                ctx = await _get_nma_context()(claim_id)
+                res = await _get_nma_agent()(ctx)
+                return ctx, res
 
-        async def _run_nma():
-            ctx = await _get_nma_context()(claim_id)
-            res = await _get_nma_agent()(ctx)
-            return ctx, res
-
-        ctx, res    = asyncio.run(_run_nma())
-        nma_elapsed = round(time.perf_counter() - nma_t0, 2)
-        nma_result  = _shape_nma_result(claim_id, res, ctx)
-        if identity_warning:
-            nma_result["warnings"] = [identity_warning] + list(nma_result["warnings"])
+            ctx, res    = asyncio.run(_run_nma())
+            nma_elapsed = round(time.perf_counter() - nma_t0, 2)
+            nma_result  = _shape_nma_result(claim_id, res, ctx)
 
         return jsonify({
             "ok":              True,
