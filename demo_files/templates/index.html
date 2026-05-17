@@ -83,7 +83,7 @@
   /* ── Input Panel ───────────────────────────────────────────────────────── */
   .input-panel { background: var(--linen); border-right: 1px solid var(--border); padding: 28px 24px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; max-height: calc(100vh - 140px); position: sticky; top: 0; }
   .panel-heading { font-size: 0.70rem; text-transform: uppercase; letter-spacing: 0.18em; color: var(--dust); padding-bottom: 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
-  .field-group { display: flex; flex-direction: column; gap: 5px; }
+  .field-group { display: flex; flex-direction: column; gap: 5px; flex: 0 0 auto; min-height: min-content; }
   .field-group label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.10em; color: var(--ink-3); }
   .field-group input, .field-group select, .field-group textarea { font-family: var(--ff); font-size: 0.88rem; background: var(--cream); color: var(--ink); border: 1px solid var(--border-dk); border-radius: var(--radius); padding: 9px 12px; transition: border-color 0.18s; width: 100%; appearance: none; }
   .field-group input:focus, .field-group select:focus, .field-group textarea:focus { outline: none; border-color: var(--sienna); }
@@ -102,6 +102,8 @@
     overflow: hidden;
     font-size: 0.78rem;
     display: none;
+    flex: 0 0 auto;
+    min-height: min-content;
   }
   .customer-card.visible { display: block; }
   .customer-card-header {
@@ -124,7 +126,7 @@
   .cust-val.risk-high    { color: var(--brick); font-weight: bold; }
 
   .ocr-note { font-size: 0.72rem; color: var(--dust); font-style: italic; margin-top: 2px; }
-  .run-section { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+  .run-section { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; flex: 0 0 auto; min-height: min-content; }
   .btn-primary { font-family: var(--ff); font-size: 0.85rem; letter-spacing: 0.06em; background: var(--ink); color: var(--linen); border: none; padding: 12px 20px; border-radius: var(--radius); cursor: pointer; transition: var(--trans); width: 100%; text-align: center; }
   .btn-primary:hover { background: var(--sienna-dk); }
   .btn-primary:active { transform: scale(0.98); }
